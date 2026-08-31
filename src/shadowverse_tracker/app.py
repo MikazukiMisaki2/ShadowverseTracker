@@ -407,23 +407,24 @@ class TrackerApp(tk.Tk):
         text = "#172536"
         muted = "#40576d"
         canvas.create_rectangle(8, 8, width - 8, height - 8, fill=panel, outline=border, width=1)
+        canvas.create_text(20, 16, anchor="nw", text=self._overlay_win_rate_summary(), fill=text, font=("Segoe UI", 10, "bold"))
         if not isinstance(snapshot, dict):
-            canvas.create_text(24, 24, anchor="nw", text="等待对局数据…", fill=text, font=("Segoe UI", 13, "bold"))
-            canvas.create_text(24, 52, anchor="nw", text="拖动此窗口可调整位置，Esc 关闭", fill=muted, font=("Segoe UI", 10))
+            canvas.create_text(24, 42, anchor="nw", text="等待对局数据…", fill=text, font=("Segoe UI", 13, "bold"))
+            canvas.create_text(24, 70, anchor="nw", text="拖动此窗口可调整位置，Esc 关闭", fill=muted, font=("Segoe UI", 10))
             return
         root = snapshot.get("root")
         players = root.get("players", []) if isinstance(root, dict) else []
         if not isinstance(players, (list, tuple)) or len(players) < 2 or not all(isinstance(p, dict) for p in players[:2]):
-            canvas.create_text(24, 24, anchor="nw", text="等待对局数据…", fill=text, font=("Segoe UI", 13, "bold"))
+            canvas.create_text(24, 42, anchor="nw", text="等待对局数据…", fill=text, font=("Segoe UI", 13, "bold"))
             return
         mine, opponent = players[0], players[1]
-        canvas.create_text(20, 18, anchor="nw", text="剩余牌库", fill=text, font=("Segoe UI", 16, "bold"))
+        canvas.create_text(20, 38, anchor="nw", text="剩余牌库", fill=text, font=("Segoe UI", 16, "bold"))
         ledger = snapshot.get("deck_ledger")
         deck_name = str(ledger.get("deck_name") or "当前牌组") if isinstance(ledger, dict) else "当前牌组"
         deck_count = ledger.get("authoritative_deck_count", mine.get("deck_count", "?")) if isinstance(ledger, dict) else mine.get("deck_count", "?")
         initial = sum(int(row.get("initial", 0)) for row in ledger.get("rows", ()) if isinstance(row, dict)) if isinstance(ledger, dict) else 40
-        canvas.create_text(20, 47, anchor="nw", text=f"{deck_name}    {deck_count} / {initial}", fill=text, font=("Segoe UI", 12, "bold"))
-        canvas.create_line(18, 76, width - 18, 76, fill=border)
+        canvas.create_text(20, 67, anchor="nw", text=f"{deck_name}    {deck_count} / {initial}", fill=text, font=("Segoe UI", 12, "bold"))
+        canvas.create_line(18, 96, width - 18, 96, fill=border)
         ledger = snapshot.get("deck_ledger")
         rows = ledger.get("rows", []) if isinstance(ledger, dict) else []
         rows = [row for row in rows if isinstance(row, dict) and isinstance(row.get("remaining"), int)]
@@ -431,10 +432,10 @@ class TrackerApp(tk.Tk):
         # making them disappear from the player's mental deck list.
         rows = sorted(rows, key=lambda row: (row.get("remaining", 0) <= 0, self._card_sort_key(row)))
         if not rows:
-            canvas.create_text(20, 94, anchor="nw", text="等待牌库数据…", fill=muted, font=("Segoe UI", 10))
+            canvas.create_text(20, 114, anchor="nw", text="等待牌库数据…", fill=muted, font=("Segoe UI", 10))
         else:
             usable_width = width - 28
-            usable_height = height - 106
+            usable_height = height - 126
             # Select the grid that gives each card the largest proportional
             # thumbnail while keeping every remaining card inside the window.
             best_columns, best_card_h = 1, 1.0
@@ -455,7 +456,7 @@ class TrackerApp(tk.Tk):
             for index, row in enumerate(rows):
                 line, col = divmod(index, columns)
                 x = 14 + col * col_width
-                y = 86 + line * row_height
+                y = 106 + line * row_height
                 value = row.get("card_id")
                 depleted = row.get("remaining", 0) <= 0
                 photo = self._card_image(value, card_h)
@@ -483,6 +484,19 @@ class TrackerApp(tk.Tk):
                     canvas.create_rectangle(x, y, x + card_w, y + card_h, fill="#d9e2ec", outline="#c93636" if depleted else border, width=3 if depleted else 1)
                     canvas.create_text(x + 6, y + 8, anchor="nw", text=f"{cost}费 {name}\n{row.get('remaining')}/{row.get('initial')}", fill=text, font=("Segoe UI", 9), width=card_w - 12)
         canvas.create_polygon(width - 18, height - 8, width - 8, height - 18, width - 8, height - 8, fill="#50657a", outline="", tags="resize_handle")
+
+    def _overlay_win_rate_summary(self) -> str:
+        active = self._active_saved_deck()
+        if active is None:
+            return "当前卡组胜率：暂无已选牌组"
+        stats = self._match_history.stats(active.key)
+        first = stats["first"]
+        second = stats["second"]
+        return (
+            f"总胜率 {float(stats['win_rate']):.1f}%    "
+            f"先手胜率 {float(first['win_rate']):.1f}%    "
+            f"后手胜率 {float(second['win_rate']):.1f}%"
+        )
 
     @staticmethod
     def _text_panel(parent: ttk.PanedWindow, title: str) -> tk.Text:

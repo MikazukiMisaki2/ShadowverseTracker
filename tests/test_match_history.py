@@ -12,7 +12,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from shadowverse_tracker.match_history import MatchHistory, MatchRecord, result_label, terminal_match_id
 
 
-def record(match_id: str, opponent_class_id: int, result: str) -> MatchRecord:
+def record(match_id: str, opponent_class_id: int, result: str, *, is_first: bool | None = None) -> MatchRecord:
     return MatchRecord(
         match_id=match_id,
         timestamp="2026-08-30T00:00:00+00:00",
@@ -24,6 +24,7 @@ def record(match_id: str, opponent_class_id: int, result: str) -> MatchRecord:
         result=result,
         result_code=101 if result == "胜利" else 102,
         turn=6,
+        is_first=is_first,
     )
 
 
@@ -31,9 +32,9 @@ class MatchHistoryTests(unittest.TestCase):
     def test_persists_and_groups_stats_by_opponent_class(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             history = MatchHistory(Path(directory) / "matches.json")
-            self.assertTrue(history.add(record("m1", 1, "胜利")))
-            self.assertTrue(history.add(record("m2", 1, "失败")))
-            self.assertTrue(history.add(record("m3", 2, "胜利")))
+            self.assertTrue(history.add(record("m1", 1, "胜利", is_first=True)))
+            self.assertTrue(history.add(record("m2", 1, "失败", is_first=False)))
+            self.assertTrue(history.add(record("m3", 2, "胜利", is_first=False)))
             self.assertFalse(history.add(record("m3", 2, "胜利")))
 
             restored = MatchHistory(history.path).load()
@@ -42,6 +43,8 @@ class MatchHistoryTests(unittest.TestCase):
             self.assertEqual(stats["wins"], 2)
             self.assertEqual(stats["losses"], 1)
             self.assertEqual(stats["win_rate"], 66.7)
+            self.assertEqual(stats["first"]["win_rate"], 100.0)
+            self.assertEqual(stats["second"]["win_rate"], 50.0)
             self.assertEqual(stats["by_class"]["精灵"]["win_rate"], 50.0)
             self.assertEqual(stats["by_class"]["皇家护卫"]["wins"], 1)
 

@@ -121,6 +121,19 @@ class DeckLedger:
                     values.append((uid, card_id))
         return values
 
+    @staticmethod
+    def _has_token_creation(snapshot: dict[str, object]) -> bool:
+        """Whether this response batch explicitly created a token.
+
+        A generated token can share the exact ID of a real deck card.  It must
+        never be used as evidence that the deck supplied that card.
+        """
+        events = snapshot.get("events", ())
+        return isinstance(events, (list, tuple)) and any(
+            isinstance(event, dict) and event.get("type") == "BattleResponsePutToken"
+            for event in events
+        )
+
     def update(self, snapshot: dict[str, object]) -> dict[str, object]:
         mine = self._mine(snapshot)
         if mine is None or not isinstance(mine.get("deck_count"), int):
@@ -152,7 +165,16 @@ class DeckLedger:
                     if isinstance(item, (list, tuple)) and item and isinstance(item[0], int):
                         candidates.append((-(index + 1), item[0]))
         else:
-            candidates.extend(self._visible_cards(mine))
+            # Cards summoned directly from the deck never enter our hand, so a
+            # newly observed field UID is useful evidence.  Consume public
+            # draws and hand cards first; ``capacity`` below guarantees that
+            # the named rows never exceed the authoritative deck decrease.
+            candidates.extend(self._visible_cards(mine, ("hand",)))
+            # ``PutToken`` is the explicit provenance signal for generated
+            # cards.  In particular, 希姆 can create 天晶魔手 with the same ID as
+            # a real deck card.  Do not let that token consume deck inventory.
+            if not self._has_token_creation(snapshot):
+                candidates.extend(self._visible_cards(mine, ("field",)))
 
         capacity = max(0, target_removed - self.identified_removed)
         for uid, card_id in candidates:

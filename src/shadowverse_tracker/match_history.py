@@ -190,12 +190,25 @@ class MatchHistory:
         wins = sum(int(group["wins"]) for group in grouped.values())
         losses = sum(int(group["losses"]) for group in grouped.values())
         finished = wins + losses
+        orders = {}
+        for key in ("first", "second"):
+            order_wins = sum(int(group[key]["wins"]) for group in grouped.values())
+            order_losses = sum(int(group[key]["losses"]) for group in grouped.values())
+            order_finished = order_wins + order_losses
+            orders[key] = {
+                "wins": order_wins,
+                "losses": order_losses,
+                "finished": order_finished,
+                "win_rate": round(order_wins * 100 / order_finished, 1) if order_finished else 0.0,
+            }
         return {
             "total": len(records),
             "wins": wins,
             "losses": losses,
             "finished": finished,
             "win_rate": round(wins * 100 / finished, 1) if finished else 0.0,
+            "first": orders["first"],
+            "second": orders["second"],
             "by_class": grouped,
         }
 

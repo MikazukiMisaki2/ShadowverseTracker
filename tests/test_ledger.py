@@ -70,6 +70,30 @@ class DeckLedgerTests(unittest.TestCase):
         value = ledger.update(snapshot(40, [{"unique_id": 90, "base_card_id": 10000010}]))
         self.assertEqual(value["identified_removed"], 0)
 
+    def test_generated_field_card_with_a_deck_id_does_not_reduce_ledger(self) -> None:
+        ledger = DeckLedger(self.deck)
+        ledger.update(snapshot(40, []))
+        value = ledger.update(snapshot(
+            39,
+            [],
+            events=[{"type": "BattleResponsePutToken", "is_ally": True}],
+            field=[{"unique_id": 90, "base_card_id": 10000010}],
+        ))
+        self.assertEqual(value["identified_removed"], 0)
+        self.assertEqual(value["unknown_removed"], 1)
+
+    def test_direct_deck_summon_on_field_reduces_its_named_row(self) -> None:
+        ledger = DeckLedger(self.deck)
+        ledger.update(snapshot(40, []))
+        value = ledger.update(snapshot(
+            39,
+            [],
+            field=[{"unique_id": 91, "base_card_id": 10000010}],
+        ))
+        row = next(row for row in value["rows"] if row["card_id"] == 10000010)
+        self.assertEqual(row["remaining"], 0)
+        self.assertEqual(value["identified_removed"], 1)
+
     def test_unseen_removal_is_reported_unknown(self) -> None:
         ledger = DeckLedger(self.deck)
         value = ledger.update(snapshot(37, []))
