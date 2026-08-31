@@ -1,0 +1,1282 @@
+"""Minimal desktop shell for the external read-only tracker."""
+
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timezone
+import math
+import os
+from pathlib import Path
+import queue
+import re
+import sys
+import tkinter as tk
+from tkinter import messagebox, simpledialog, ttk
+try:
+    from PIL import Image, ImageTk
+except ImportError:  # image support remains optional for source runs
+    Image = None  # type: ignore[assignment]
+    ImageTk = None  # type: ignore[assignment]
+
+from .card_catalog import (
+    get_card_metadata,
+    get_card_name,
+    is_card_allowed,
+    latest_card_pack,
+    load_card_catalog,
+)
+from .deck_repository import DeckRepository, SavedDeck
+from .memory.deck import DeckCard
+from .official_deck import OfficialDeck, OfficialDeckError, import_deck_code, parse_official_deck
+from .match_history import CLASS_NAMES, MatchHistory, MatchRecord, class_name, result_label, terminal_match_id
+from .opponent_hand import OpponentKnownHand
+from .tracker_service import TrackerConfig, TrackerService
+
+
+class TrackerApp(tk.Tk):
+    def __init__(self, args: argparse.Namespace) -> None:
+        super().__init__()
+        self.title("Shadowverse Tracker")
+        self.geometry("1280x760")
+        self.minsize(1000, 620)
+        self._events: queue.Queue[tuple[str, object]] = queue.Queue()
+        self._service: TrackerService | None = None
+        self._repository = DeckRepository()
+        self._repository_error = ""
+        try:
+            self._repository.load()
+        except (OSError, ValueError) as exc:
+            self._repository_error = str(exc)
+        self._match_history = MatchHistory()
+        self._match_history_error = ""
+        try:
+            self._match_history.load()
+        except (OSError, ValueError) as exc:
+            self._match_history_error = str(exc)
+        self._match_sequence = 0
+        self._match_id: str | None = None
+        self._match_deck_key: str | None = None
+        self._last_model_address: str | None = None
+        self._last_render_turn: int | None = None
+        self._last_render_result: int | None = None
+        self._deck_choice_keys: list[str] = []
+        self._opponent_known_hand = OpponentKnownHand()
+        self._last_snapshot: dict[str, object] | None = None
+        self._overlay: tk.Toplevel | None = None
+        self._overlay_canvas: tk.Canvas | None = None
+        self._overlay_drag_origin: tuple[int, int] | None = None
+        self._overlay_resize_origin: tuple[int, int, int, int] | None = None
+        self._overlay_images: dict[tuple[int, int], object] = {}
+        self._card_image_paths: dict[int, Path | None] = {}
+        self._card_image_roots = self._find_card_image_roots()
+        self._build_ui(args)
+        self.after(100, self._drain_events)
+        # Start in automatic-discovery mode; the service patiently waits for
+        # ShadowverseWB and future battles instead of requiring a manual click.
+        self.after(300, self._connect)
+        self.protocol("WM_DELETE_WINDOW", self._close)
+
+    def _build_ui(self, args: argparse.Namespace) -> None:
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure("App.TFrame", background="#dfe7f0")
+        style.configure("TLabelframe", background="#eaf0f6", foreground="#182635", bordercolor="#9aabbd", relief="flat")
+        style.configure("TLabelframe.Label", background="#eaf0f6", foreground="#182635", font=("Segoe UI", 10, "bold"))
+        style.configure("TLabel", background="#eaf0f6", foreground="#182635")
+        style.configure("TButton", padding=(9, 5), font=("Segoe UI", 9))
+        style.configure("TCheckbutton", background="#eaf0f6", foreground="#182635")
+        style.map("TCheckbutton", background=[("active", "#d6e1ec")])
+        style.configure("TEntry", fieldbackground="#f6f8fb", foreground="#182635", insertcolor="#182635")
+        style.configure("TSpinbox", fieldbackground="#f6f8fb", foreground="#182635", insertcolor="#182635")
+        style.configure("TCombobox", fieldbackground="#f6f8fb", background="#d4e0ec", foreground="#182635")
+        style.configure("TPanedwindow", background="#dfe7f0")
+
+        root = ttk.Frame(self, padding=12, style="App.TFrame")
+        root.pack(fill="both", expand=True)
+
+        decks = ttk.LabelFrame(root, text="本地牌组仓库", padding=8)
+        decks.pack(fill="x")
+        decks.columnconfigure(1, weight=1)
+        ttk.Label(decks, text="当前牌组").grid(row=0, column=0, sticky="w")
+        self.deck_choice_var = tk.StringVar()
+        self.deck_choice = ttk.Combobox(
+            decks,
+            textvariable=self.deck_choice_var,
+            state="readonly",
+            width=48,
+        )
+        self.deck_choice.grid(row=0, column=1, padx=6, sticky="ew")
+        self.deck_choice.bind("<<ComboboxSelected>>", self._select_deck)
+        ttk.Button(decks, text="删除牌组", command=self._delete_deck).grid(
+            row=0, column=2, padx=(6, 0)
+        )
+        # Local match statistics are enabled by default; users can turn them
+        # off at any time with the checkbox.
+        self.record_matches_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            decks,
+            text="启用对局记录（本地）",
+            variable=self.record_matches_var,
+            command=self._toggle_match_recording,
+        ).grid(row=0, column=3, padx=(12, 0))
+        ttk.Button(decks, text="对局统计", command=self._show_match_stats).grid(
+            row=0, column=4, padx=(6, 0)
+        )
+        ttk.Button(decks, text="编辑当前卡组", command=self._edit_current_deck).grid(
+            row=0, column=5, padx=(6, 0)
+        )
+        self.overlay_button = ttk.Button(
+            decks, text="打开悬浮记牌器", command=self._toggle_overlay
+        )
+        self.overlay_button.grid(row=0, column=6, padx=(6, 0))
+
+        active_deck = self._active_saved_deck()
+        default_class = class_name(active_deck.class_id) if active_deck else class_name(1)
+        default_mode = "轮换" if active_deck is None or active_deck.format_version == 1 else "无限"
+        ttk.Label(decks, text="登记职业").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        self.import_class_var = tk.StringVar(value=default_class)
+        self.import_class_choice = ttk.Combobox(
+            decks,
+            textvariable=self.import_class_var,
+            values=[CLASS_NAMES[index] for index in sorted(CLASS_NAMES)],
+            state="readonly",
+            width=14,
+        )
+        self.import_class_choice.grid(row=1, column=1, padx=6, pady=(8, 0), sticky="w")
+        ttk.Label(decks, text="模式").grid(row=1, column=2, sticky="e", pady=(8, 0))
+        self.import_mode_var = tk.StringVar(value=default_mode)
+        ttk.Combobox(
+            decks,
+            textvariable=self.import_mode_var,
+            values=("轮换", "无限"),
+            state="readonly",
+            width=10,
+        ).grid(row=1, column=3, padx=6, pady=(8, 0), sticky="w")
+        ttk.Label(
+            decks,
+            text="新增卡牌仅显示所选职业与中立；轮换为最新六个卡包",
+        ).grid(row=1, column=4, columnspan=2, sticky="w", pady=(8, 0))
+
+        ttk.Label(decks, text="链接 / 四位牌组码").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        self.deck_url_var = tk.StringVar()
+        ttk.Entry(decks, textvariable=self.deck_url_var).grid(
+            row=2, column=1, columnspan=4, padx=6, pady=(8, 0), sticky="ew"
+        )
+        ttk.Button(decks, text="导入并保存", command=self._import_deck).grid(
+            row=2, column=5, padx=(6, 0), pady=(8, 0)
+        )
+        self.deck_status_var = tk.StringVar()
+        ttk.Label(decks, textvariable=self.deck_status_var).grid(
+            row=3, column=0, columnspan=6, sticky="w", pady=(8, 0)
+        )
+
+        connection = ttk.LabelFrame(root, text="只读连接", padding=8)
+        connection.pack(fill="x", pady=(10, 0))
+        ttk.Label(connection, text="BattleModel 地址").grid(row=0, column=0, sticky="w")
+        self.model_var = tk.StringVar(value=f"0x{args.model:X}" if args.model else "")
+        ttk.Entry(connection, textvariable=self.model_var, width=22).grid(row=0, column=1, padx=6)
+        ttk.Label(connection, text="（留空自动发现）").grid(row=0, column=2, sticky="w")
+        self.connect_button = ttk.Button(connection, text="开始读取", command=self._connect)
+        self.connect_button.grid(row=0, column=3, padx=(12, 0))
+        self.status_var = tk.StringVar(value="未连接")
+        ttk.Label(connection, textvariable=self.status_var).grid(row=1, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        ttk.Label(connection, text="抽牌概率").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        self.probability_card_var = tk.StringVar()
+        self.probability_card_choice = ttk.Combobox(
+            connection, textvariable=self.probability_card_var, state="readonly", width=28
+        )
+        self.probability_card_choice.grid(row=2, column=1, padx=6, pady=(8, 0), sticky="w")
+        ttk.Label(connection, text="未来抽牌").grid(row=2, column=2, sticky="e", pady=(8, 0))
+        self.probability_draws_var = tk.StringVar(value="1")
+        ttk.Entry(connection, textvariable=self.probability_draws_var, width=5).grid(row=2, column=3, padx=(6, 0), pady=(8, 0), sticky="w")
+        self.probability_result_var = tk.StringVar(value="选择牌库中的卡牌后计算")
+        ttk.Button(connection, text="计算", command=self._calculate_draw_probability).grid(row=2, column=4, padx=(6, 0), pady=(8, 0))
+        ttk.Label(connection, textvariable=self.probability_result_var).grid(row=3, column=0, columnspan=5, sticky="w", pady=(6, 0))
+        self._probability_cards: dict[str, tuple[int, int, int]] = {}
+
+        details = ttk.PanedWindow(root, orient="horizontal")
+        details.pack(fill="both", expand=True, pady=(10, 0))
+        self.hand_text = self._overview_panel(details)
+        self.deck_text = self._text_panel(details, "剩余牌库")
+        self.field_text = self._text_panel(details, "双方场面")
+        self.history_text = self._text_panel(details, "最近记录")
+        self.deck_text.tag_configure("deck_header", font=("Segoe UI", 14, "bold"))
+        self.deck_text.tag_configure("deck_section", font=("Segoe UI", 10, "bold"), foreground="#24527a")
+        self._refresh_deck_choices()
+        self._update_stats_summary()
+
+    def _toggle_overlay(self) -> None:
+        """Show or hide the lightweight Canvas overlay."""
+        if self._overlay is not None and self._overlay.winfo_exists():
+            self._overlay.destroy()
+            self._overlay = None
+            self._overlay_canvas = None
+            self.overlay_button.configure(text="打开悬浮记牌器")
+            return
+        overlay = tk.Toplevel(self)
+        overlay.title("Shadowverse 悬浮记牌器")
+        overlay.geometry("430x1080+40+40")
+        overlay.minsize(360, 520)
+        overlay.attributes("-topmost", True)
+        overlay.configure(bg="#00ff00")
+        try:
+            overlay.overrideredirect(True)
+            overlay.wm_attributes("-transparentcolor", "#00ff00")
+        except tk.TclError:
+            # Non-Windows platforms simply retain the solid Canvas background.
+            overlay.configure(bg="#e9eef4")
+        canvas = tk.Canvas(
+            overlay, bg="#00ff00", highlightthickness=0, borderwidth=0
+        )
+        canvas.pack(fill="both", expand=True)
+        self._overlay = overlay
+        self._overlay_canvas = canvas
+        self.overlay_button.configure(text="关闭悬浮记牌器")
+        canvas.bind("<ButtonPress-1>", self._overlay_press)
+        canvas.bind("<B1-Motion>", self._overlay_drag)
+        canvas.bind("<ButtonRelease-1>", lambda _event: setattr(self, "_overlay_resize_origin", None))
+        canvas.tag_bind("resize_handle", "<ButtonPress-1>", self._overlay_resize_press)
+        canvas.tag_bind("resize_handle", "<B1-Motion>", self._overlay_resize_drag)
+        overlay.bind("<Configure>", lambda _event: self.after_idle(lambda: self._render_overlay(self._last_snapshot)), add="+")
+        overlay.bind("<Escape>", lambda _event: self._toggle_overlay())
+        overlay.protocol("WM_DELETE_WINDOW", self._toggle_overlay)
+        self._render_overlay(self._last_snapshot)
+
+    @staticmethod
+    def _find_card_image_roots() -> list[Path]:
+        """Find an optional card-image pack placed beside the repository."""
+        project_root = Path(__file__).resolve().parents[2]
+        runtime_root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) if getattr(sys, "frozen", False) else project_root
+        roots = [
+            runtime_root / "SV_WB_Cards",
+            runtime_root / "SV_WB_Cards" / "SV_WB_Cards",
+            project_root / "SV_WB_Cards",
+            project_root / "SV_WB_Cards" / "SV_WB_Cards",
+            Path(__file__).resolve().parents[3] / "SV_WB_Cards",
+            Path(__file__).resolve().parents[3] / "SV_WB_Cards" / "SV_WB_Cards",
+            Path.cwd() / "SV_WB_Cards",
+            Path.cwd() / "SV_WB_Cards" / "SV_WB_Cards",
+        ]
+        return list(dict.fromkeys(path for path in roots if path.is_dir()))
+
+    def _card_image(self, card_id: object, height: int = 38) -> object | None:
+        if not isinstance(card_id, int) or card_id <= 0 or Image is None or ImageTk is None:
+            return None
+        cache_key = (card_id, height)
+        cached = self._overlay_images.get(cache_key)
+        if cached is not None:
+            return cached
+        path = self._card_image_paths.get(card_id)
+        if path is None and card_id not in self._card_image_paths:
+            path = None
+            token = str(card_id)
+            for root in self._card_image_roots:
+                candidates = list(root.rglob("*.webp")) + list(root.rglob("*.png"))
+                matches = [
+                    item for item in candidates
+                    if re.search(rf"(?:^|_){re.escape(token)}(?:_|@|$)", item.stem)
+                ]
+                if matches:
+                    # Prefer the base illustration over an evolution/style variant.
+                    path = next((item for item in matches if "_evo" not in item.stem and "@" not in item.stem), matches[0])
+                    break
+            self._card_image_paths[card_id] = path
+        if path is None:
+            return None
+        try:
+            image = Image.open(path).convert("RGBA")
+            ratio = height / max(image.height, 1)
+            image = image.resize((max(1, int(image.width * ratio)), height), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(image)
+            self._overlay_images[cache_key] = photo
+            return photo
+        except (OSError, ValueError, tk.TclError):
+            return None
+
+    def _overlay_press(self, event: tk.Event) -> None:
+        if self._overlay_resize_origin is not None:
+            return
+        self._overlay_drag_origin = (event.x_root, event.y_root)
+
+    def _overlay_drag(self, event: tk.Event) -> None:
+        if self._overlay_resize_origin is not None:
+            return
+        if self._overlay is None or self._overlay_drag_origin is None:
+            return
+        old_x, old_y = self._overlay_drag_origin
+        x = self._overlay.winfo_x() + event.x_root - old_x
+        y = self._overlay.winfo_y() + event.y_root - old_y
+        self._overlay.geometry(f"+{x}+{y}")
+        self._overlay_drag_origin = (event.x_root, event.y_root)
+
+    def _overlay_resize_press(self, event: tk.Event) -> None:
+        if self._overlay is None:
+            return
+        self._overlay_resize_origin = (
+            event.x_root,
+            event.y_root,
+            self._overlay.winfo_width(),
+            self._overlay.winfo_height(),
+        )
+
+    def _overlay_resize_drag(self, event: tk.Event) -> None:
+        if self._overlay is None or self._overlay_resize_origin is None:
+            return
+        old_x, old_y, old_width, old_height = self._overlay_resize_origin
+        width = max(260, old_width + event.x_root - old_x)
+        height = max(360, old_height + event.y_root - old_y)
+        self._overlay.geometry(f"{width}x{height}")
+
+    def _render_overlay(self, snapshot: dict[str, object] | None) -> None:
+        canvas = self._overlay_canvas
+        if canvas is None or self._overlay is None or not self._overlay.winfo_exists():
+            return
+        canvas.delete("all")
+        width = max(canvas.winfo_width(), 360)
+        height = max(canvas.winfo_height(), 520)
+        panel = "#e9eef4"
+        border = "#91a4b8"
+        text = "#172536"
+        muted = "#40576d"
+        canvas.create_rectangle(8, 8, width - 8, height - 8, fill=panel, outline=border, width=1)
+        if not isinstance(snapshot, dict):
+            canvas.create_text(24, 24, anchor="nw", text="等待对局数据…", fill=text, font=("Segoe UI", 13, "bold"))
+            canvas.create_text(24, 52, anchor="nw", text="拖动此窗口可调整位置，Esc 关闭", fill=muted, font=("Segoe UI", 10))
+            return
+        root = snapshot.get("root")
+        players = root.get("players", []) if isinstance(root, dict) else []
+        if not isinstance(players, (list, tuple)) or len(players) < 2 or not all(isinstance(p, dict) for p in players[:2]):
+            canvas.create_text(24, 24, anchor="nw", text="等待对局数据…", fill=text, font=("Segoe UI", 13, "bold"))
+            return
+        mine, opponent = players[0], players[1]
+        canvas.create_text(20, 18, anchor="nw", text="剩余牌库", fill=text, font=("Segoe UI", 16, "bold"))
+        ledger = snapshot.get("deck_ledger")
+        deck_name = str(ledger.get("deck_name") or "当前牌组") if isinstance(ledger, dict) else "当前牌组"
+        deck_count = ledger.get("authoritative_deck_count", mine.get("deck_count", "?")) if isinstance(ledger, dict) else mine.get("deck_count", "?")
+        initial = sum(int(row.get("initial", 0)) for row in ledger.get("rows", ()) if isinstance(row, dict)) if isinstance(ledger, dict) else 40
+        canvas.create_text(20, 47, anchor="nw", text=f"{deck_name}    {deck_count} / {initial}", fill=text, font=("Segoe UI", 12, "bold"))
+        canvas.create_line(18, 76, width - 18, 76, fill=border)
+        ledger = snapshot.get("deck_ledger")
+        rows = ledger.get("rows", []) if isinstance(ledger, dict) else []
+        rows = [row for row in rows if isinstance(row, dict) and isinstance(row.get("remaining"), int)]
+        # Keep depleted cards visible at the end of the overlay rather than
+        # making them disappear from the player's mental deck list.
+        rows = sorted(rows, key=lambda row: (row.get("remaining", 0) <= 0, self._card_sort_key(row)))
+        if not rows:
+            canvas.create_text(20, 94, anchor="nw", text="等待牌库数据…", fill=muted, font=("Segoe UI", 10))
+        else:
+            usable_width = width - 28
+            usable_height = height - 106
+            # Select the grid that gives each card the largest proportional
+            # thumbnail while keeping every remaining card inside the window.
+            best_columns, best_card_h = 1, 1.0
+            image_ratio = 530 / 687
+            for columns in range(1, len(rows) + 1):
+                grid_rows = (len(rows) + columns - 1) // columns
+                tile_width = usable_width / columns
+                tile_height = usable_height / grid_rows
+                card_height = min(tile_height - 6, (tile_width - 10) / image_ratio)
+                if card_height > best_card_h:
+                    best_columns, best_card_h = columns, card_height
+            columns = best_columns
+            grid_rows = (len(rows) + columns - 1) // columns
+            col_width = usable_width / columns
+            row_height = usable_height / grid_rows
+            card_w = int(col_width - 8)
+            card_h = max(22, int(best_card_h))
+            for index, row in enumerate(rows):
+                line, col = divmod(index, columns)
+                x = 14 + col * col_width
+                y = 86 + line * row_height
+                value = row.get("card_id")
+                depleted = row.get("remaining", 0) <= 0
+                photo = self._card_image(value, card_h)
+                if photo is not None:
+                    canvas.create_image(x + card_w // 2, y, image=photo, anchor="n")
+                    if depleted and hasattr(photo, "width"):
+                        image_width = int(photo.width())
+                        canvas.create_rectangle(
+                            x + card_w // 2 - image_width // 2 - 2,
+                            y - 2,
+                            x + card_w // 2 + image_width // 2 + 2,
+                            y + card_h + 2,
+                            outline="#c93636",
+                            width=3,
+                        )
+                    badge_w = max(34, min(44, card_w // 2))
+                    badge_fill = "#ffe7e7" if depleted else "#f4f7fb"
+                    badge_border = "#c93636" if depleted else "#50657a"
+                    badge_text = "#9f1e1e" if depleted else "#172536"
+                    canvas.create_rectangle(x + 2, y + card_h - 21, x + 2 + badge_w, y + card_h - 2, fill=badge_fill, outline=badge_border)
+                    canvas.create_text(x + 6, y + card_h - 12, anchor="w", text=f"{row.get('remaining')}/{row.get('initial')}", fill=badge_text, font=("Segoe UI", max(7, min(10, card_h // 11)), "bold"))
+                else:
+                    name = self._card_label(value)
+                    cost = get_card_metadata(value).cost if isinstance(value, int) and get_card_metadata(value) else "?"
+                    canvas.create_rectangle(x, y, x + card_w, y + card_h, fill="#d9e2ec", outline="#c93636" if depleted else border, width=3 if depleted else 1)
+                    canvas.create_text(x + 6, y + 8, anchor="nw", text=f"{cost}费 {name}\n{row.get('remaining')}/{row.get('initial')}", fill=text, font=("Segoe UI", 9), width=card_w - 12)
+        canvas.create_polygon(width - 18, height - 8, width - 8, height - 18, width - 8, height - 8, fill="#50657a", outline="", tags="resize_handle")
+
+    @staticmethod
+    def _text_panel(parent: ttk.PanedWindow, title: str) -> tk.Text:
+        frame = ttk.LabelFrame(parent, text=title, padding=5)
+        text = tk.Text(
+            frame,
+            height=16,
+            width=30,
+            state="disabled",
+            wrap="none",
+            background="#f6f8fb",
+            foreground="#182635",
+            insertbackground="#182635",
+            relief="flat",
+            borderwidth=0,
+            padx=7,
+            pady=7,
+            font=("Segoe UI", 10),
+        )
+        text.pack(fill="both", expand=True)
+        parent.add(frame, weight=1)
+        return text
+
+    def _overview_panel(self, parent: ttk.PanedWindow) -> tk.Text:
+        frame = ttk.LabelFrame(parent, text="对局概览", padding=5)
+        self.summary_var = tk.StringVar(value="等待读取")
+        ttk.Label(
+            frame,
+            textvariable=self.summary_var,
+            justify="left",
+            anchor="w",
+        ).pack(fill="x", anchor="w", pady=(0, 4))
+        self.stats_var = tk.StringVar(value="对局记录未启用")
+        ttk.Label(
+            frame,
+            textvariable=self.stats_var,
+            justify="left",
+            anchor="w",
+        ).pack(fill="x", anchor="w", pady=(0, 4))
+        ttk.Separator(frame, orient="horizontal").pack(fill="x", pady=(0, 4))
+        ttk.Label(frame, text="我的手牌").pack(anchor="w")
+        text = tk.Text(
+            frame,
+            height=16,
+            width=30,
+            state="disabled",
+            wrap="none",
+            background="#f6f8fb",
+            foreground="#182635",
+            insertbackground="#182635",
+            relief="flat",
+            borderwidth=0,
+            padx=7,
+            pady=7,
+            font=("Segoe UI", 10),
+        )
+        text.pack(fill="both", expand=True)
+        parent.add(frame, weight=1)
+        return text
+
+    def _connect(self) -> None:
+        if self._service and self._service.running:
+            self._service.stop()
+            self.connect_button.configure(text="开始读取")
+            self.status_var.set("已停止")
+            return
+        raw_model = self.model_var.get().strip()
+        try:
+            model = int(raw_model, 0) if raw_model else 0
+        except ValueError:
+            messagebox.showerror("地址格式错误", "请输入类似 0x20B0CFEBC40 的地址。")
+            return
+        self._service = TrackerService(
+            TrackerConfig(
+                model_address=model,
+                output_path=Path("logs") / "app_session.jsonl",
+                selected_deck=self._active_deck_snapshot(),
+                selected_deck_key=self._active_saved_deck().key if self._active_saved_deck() else None,
+            ),
+            on_snapshot=lambda value: self._events.put(("snapshot", value)),
+            on_error=lambda value: self._events.put(("error", value)),
+            on_status=lambda value: self._events.put(("status", value)),
+            on_deck=lambda value: self._events.put(("deck", value)),
+        )
+        self._service.start()
+        self.connect_button.configure(text="停止读取")
+        self.status_var.set("正在后台读取（不会暂停游戏）")
+
+    def _refresh_probability_choices(self, ledger: dict[str, object]) -> None:
+        rows = ledger.get("rows", ())
+        choices: dict[str, tuple[int, int, int]] = {}
+        if isinstance(rows, (list, tuple)):
+            for row in sorted((item for item in rows if isinstance(item, dict)), key=self._card_sort_key):
+                card_id = row.get("card_id")
+                remaining = row.get("remaining")
+                initial = row.get("initial")
+                if not isinstance(card_id, int) or not isinstance(remaining, int) or remaining <= 0:
+                    continue
+                if not isinstance(initial, int):
+                    initial = remaining
+                metadata = get_card_metadata(card_id)
+                cost = metadata.cost if metadata is not None else "?"
+                label = f"{cost}费 {self._card_label(card_id)}（剩余 {remaining}）"
+                choices[label] = (card_id, remaining, initial)
+        previous = self.probability_card_var.get()
+        self._probability_cards = choices
+        self.probability_card_choice.configure(values=tuple(choices))
+        if previous not in choices:
+            self.probability_card_var.set(next(iter(choices), ""))
+
+    def _calculate_draw_probability(self) -> None:
+        selected = self._probability_cards.get(self.probability_card_var.get())
+        if selected is None:
+            self.probability_result_var.set("当前牌库中没有可计算的卡牌")
+            return
+        try:
+            draws = int(self.probability_draws_var.get())
+        except ValueError:
+            self.probability_result_var.set("抽牌次数请输入正整数")
+            return
+        if draws <= 0:
+            self.probability_result_var.set("抽牌次数请输入正整数")
+            return
+        snapshot = self._last_snapshot or {}
+        ledger = snapshot.get("deck_ledger") if isinstance(snapshot, dict) else None
+        total = ledger.get("authoritative_deck_count") if isinstance(ledger, dict) else None
+        if not isinstance(total, int) or total <= 0:
+            self.probability_result_var.set("尚未取得有效的剩余牌库数量")
+            return
+        _card_id, remaining, _initial = selected
+        actual_draws = min(draws, total)
+        misses = math.comb(total - remaining, actual_draws) / math.comb(total, actual_draws) if actual_draws <= total - remaining else 0.0
+        chance = (1.0 - misses) * 100
+        self.probability_result_var.set(
+            f"未来 {actual_draws} 抽至少抽到 1 张：{chance:.1f}%（该牌剩余 {remaining}/{total}）"
+        )
+
+    def _toggle_match_recording(self) -> None:
+        if self.record_matches_var.get():
+            self.status_var.set("已开启对局记录（仅保存到本机）")
+        else:
+            self.status_var.set("已关闭对局记录")
+        self._update_stats_summary()
+
+    def _drain_events(self) -> None:
+        while True:
+            try:
+                kind, value = self._events.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "error":
+                self.status_var.set(f"读取错误：{value}")
+                continue
+            if kind == "status":
+                self.status_var.set(str(value))
+                continue
+            if kind == "deck":
+                self._render_deck_info(value)  # type: ignore[arg-type]
+                continue
+            self._render(value)  # type: ignore[arg-type]
+        self.after(100, self._drain_events)
+
+    @staticmethod
+    def _set_text(widget: tk.Text, value: str) -> None:
+        widget.configure(state="normal")
+        widget.delete("1.0", "end")
+        widget.insert("1.0", value)
+        widget.configure(state="disabled")
+
+    @staticmethod
+    def _set_rich_text(widget: tk.Text, segments: list[tuple[str, str | None]]) -> None:
+        widget.configure(state="normal")
+        widget.delete("1.0", "end")
+        for value, tag in segments:
+            widget.insert("end", value, tag or ())
+        widget.configure(state="disabled")
+
+    def _render(self, snapshot: dict[str, object]) -> None:
+        self._last_snapshot = snapshot
+        self._render_overlay(snapshot)
+        root = snapshot.get("root")
+        if not isinstance(root, dict):
+            return
+        address = snapshot.get("address")
+        if isinstance(address, str):
+            self.model_var.set(address)
+        self.status_var.set("已连接，正在后台读取（不会暂停游戏）")
+        players = root.get("players", [])
+        if not isinstance(players, (list, tuple)) or len(players) < 2:
+            return
+        mine, opponent = players[0], players[1]
+        if not isinstance(mine, dict) or not isinstance(opponent, dict):
+            return
+        self._track_match(snapshot, mine, opponent)
+        self._opponent_known_hand.update(snapshot, opponent)
+        self.summary_var.set(
+            f"回合 {mine.get('turn', '?')}    "
+            f"我方生命 {mine.get('life', '?')} / 对手 {opponent.get('life', '?')}    "
+            f"我方牌库 {mine.get('deck_count', '?')}    "
+            f"PP {mine.get('pp', '?')}/{mine.get('max_pp', '?')}    "
+            f"结果码 {mine.get('result_code', 0)}"
+        )
+        hand = mine.get("hand", [])
+        hand_lines = [
+            self._format_card_line(card)
+            for card in hand if isinstance(card, dict)
+        ] if isinstance(hand, (list, tuple)) else []
+        self._set_text(self.hand_text, "\n".join(hand_lines))
+        ledger = snapshot.get("deck_ledger")
+        if isinstance(ledger, dict):
+            self._refresh_probability_choices(ledger)
+            deck_name = str(ledger.get("deck_name") or "未命名牌组")
+            deck_count = ledger.get("authoritative_deck_count", "?")
+            initial_total = sum(
+                int(row.get("initial", 0))
+                for row in ledger.get("rows", ())
+                if isinstance(row, dict) and isinstance(row.get("initial"), int)
+            ) if isinstance(ledger.get("rows"), (list, tuple)) else "?"
+            deck_segments: list[tuple[str, str | None]] = [
+                (f"{deck_name}\n", "deck_header"),
+                (f"剩余牌库：{deck_count} / {initial_total} 张\n", "deck_header"),
+            ]
+            unknown = ledger.get("unknown_removed", 0)
+            if isinstance(unknown, int) and unknown:
+                deck_segments.append((f"未识别离开牌库：{unknown} 张\n", "deck_section"))
+            rows = ledger.get("rows", ())
+            if isinstance(rows, (list, tuple)):
+                valid_rows = [row for row in rows if isinstance(row, dict)]
+                remaining = [row for row in valid_rows if isinstance(row.get("remaining"), int) and row.get("remaining", 0) > 0]
+                depleted = [row for row in valid_rows if isinstance(row.get("remaining"), int) and row.get("remaining", 0) <= 0]
+                deck_segments.append(("\n未抽空\n", "deck_section"))
+                for row in sorted(remaining, key=self._card_sort_key):
+                    deck_segments.append((self._format_deck_row(row) + "\n", None))
+                deck_segments.append(("\n已抽空\n", "deck_section"))
+                if depleted:
+                    for row in sorted(depleted, key=self._card_sort_key):
+                        deck_segments.append((self._format_deck_row(row) + "\n", None))
+                else:
+                    deck_segments.append(("（暂无）\n", None))
+            self._set_rich_text(self.deck_text, deck_segments)
+        else:
+            self._set_text(self.deck_text, "请从本地牌组仓库选择牌组")
+        lines = ["我方："]
+        lines.extend(self._format_field(mine.get("field", [])))
+        lines.append("\n对手（仅公开信息）：")
+        lines.extend(self._format_field(opponent.get("field", [])))
+        lines.append("\n对手手牌（人机本地）：")
+        lines.extend(self._format_opponent_hand(opponent))
+        self._set_text(self.field_text, "\n".join(lines))
+        self._set_text(self.history_text, self._format_recent_history(mine, opponent))
+
+    def _track_match(
+        self,
+        snapshot: dict[str, object],
+        mine: dict[str, object],
+        opponent: dict[str, object],
+    ) -> None:
+        model_address = str(snapshot.get("address") or "unknown")
+        turn = mine.get("turn") if isinstance(mine.get("turn"), int) else None
+        result_code = mine.get("result_code") if isinstance(mine.get("result_code"), int) else 0
+        is_new_match = (
+            self._match_id is None
+            or model_address != self._last_model_address
+            or (
+                result_code == 0
+                and self._last_render_result not in (None, 0)
+            )
+            or (
+                result_code != 0
+                and self._last_render_result not in (None, 0, result_code)
+            )
+            or (
+                turn is not None
+                and self._last_render_turn is not None
+                and turn + 2 < self._last_render_turn
+            )
+        )
+        if is_new_match:
+            self._match_sequence += 1
+            self._match_id = f"{model_address}:{os.getpid()}:{self._match_sequence}"
+            self._opponent_known_hand.reset()
+            deck = snapshot.get("deck")
+            self._match_deck_key = (
+                str(deck.get("deck_key"))
+                if isinstance(deck, dict) and deck.get("deck_key")
+                else None
+            )
+            if self._match_deck_key is None:
+                active = self._active_saved_deck()
+                self._match_deck_key = active.key if active else None
+        if (
+            self.record_matches_var.get()
+            and self._match_id is not None
+            and result_code != 0
+            and self._match_deck_key
+        ):
+            deck = snapshot.get("deck")
+            deck_name = str(deck.get("deck_name") or "未命名牌组") if isinstance(deck, dict) else "未命名牌组"
+            opponent_class_id = snapshot.get("opponent_class_id")
+            if not isinstance(opponent_class_id, int):
+                opponent_class_id = None
+            try:
+                self._match_history_error = ""
+                model_match_id = terminal_match_id(
+                    model_address,
+                    result_code,
+                    turn,
+                    mine.get("life") if isinstance(mine.get("life"), int) else None,
+                    opponent.get("life") if isinstance(opponent.get("life"), int) else None,
+                    mine.get("deck_count") if isinstance(mine.get("deck_count"), int) else None,
+                    mine.get("cemetery_count") if isinstance(mine.get("cemetery_count"), int) else None,
+                    len(mine.get("played_card_ids", ())) if isinstance(mine.get("played_card_ids"), (list, tuple)) else 0,
+                    len(mine.get("destroyed_card_ids", ())) if isinstance(mine.get("destroyed_card_ids"), (list, tuple)) else 0,
+                )
+                added = self._match_history.add(MatchRecord(
+                    match_id=model_match_id,
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    deck_key=self._match_deck_key,
+                    deck_name=deck_name,
+                    self_class_id=(snapshot.get("self_class_id") if isinstance(snapshot.get("self_class_id"), int) else None),
+                    opponent_class_id=opponent_class_id,
+                    opponent_class=class_name(opponent_class_id),
+                    result=result_label(result_code, mine.get("life"), opponent.get("life")),
+                    result_code=result_code,
+                    turn=turn,
+                    is_first=mine.get("is_first_side") if isinstance(mine.get("is_first_side"), bool) else None,
+                ))
+            except (OSError, ValueError) as exc:
+                self._match_history_error = str(exc)
+                self.stats_var.set(f"对局记录保存失败：{exc}")
+                added = False
+            if added:
+                self.stats_var.set("本局已保存；" + self._stats_summary_for_key(self._match_deck_key))
+        elif self.record_matches_var.get() and result_code != 0 and not self._match_deck_key:
+            self.stats_var.set("本局未保存：请先选择本地牌组")
+        self._last_model_address = model_address
+        self._last_render_turn = turn
+        self._last_render_result = result_code
+        self._update_stats_summary()
+
+    def _stats_summary_for_key(self, deck_key: str) -> str:
+        stats = self._match_history.stats(deck_key)
+        return (
+            f"当前卡组：{stats['wins']} 胜 / {stats['losses']} 负，"
+            f"胜率 {float(stats['win_rate']):.1f}%（共 {stats['total']} 局）"
+        )
+
+    def _update_stats_summary(self) -> None:
+        if not self.record_matches_var.get():
+            self.stats_var.set("对局记录未启用")
+            return
+        if self._match_history_error:
+            self.stats_var.set(f"对局记录保存失败：{self._match_history_error}")
+            return
+        active = self._active_saved_deck()
+        if active is None:
+            self.stats_var.set("对局记录已启用；请选择本地牌组")
+            return
+        self.stats_var.set(self._stats_summary_for_key(active.key))
+
+    def _show_match_stats(self) -> None:
+        active = self._active_saved_deck()
+        if active is None:
+            messagebox.showinfo("对局统计", "请先从本地牌组仓库选择牌组。", parent=self)
+            return
+        stats = self._match_history.stats(active.key)
+        window = tk.Toplevel(self)
+        window.title(f"对局统计 - {active.name}")
+        window.geometry("620x420")
+        text = tk.Text(window, wrap="none", state="normal", padx=12, pady=12)
+        text.pack(fill="both", expand=True)
+        text.insert("end", f"{active.name}\n", "title")
+        text.insert("end", f"总计：{stats['total']} 局    {stats['wins']} 胜 / {stats['losses']} 负    胜率 {float(stats['win_rate']):.1f}%\n\n", "title")
+        text.insert("end", "对手职业\n", "section")
+        groups = stats["by_class"]
+        if isinstance(groups, dict) and groups:
+            for name in sorted(groups):
+                group = groups[name]
+                text.insert(
+                    "end",
+                    f"{name}：{group['wins']} 胜 / {group['losses']} 负    "
+                    f"胜率 {float(group['win_rate']):.1f}%（{group['total']} 局）\n",
+                )
+                first = group.get("first") if isinstance(group, dict) else None
+                second = group.get("second") if isinstance(group, dict) else None
+                if isinstance(first, dict) and isinstance(second, dict):
+                    text.insert(
+                        "end",
+                        f"    先手 {first['wins']}/{first['total']}  胜率 {float(first['win_rate']):.1f}%    "
+                        f"后手 {second['wins']}/{second['total']}  胜率 {float(second['win_rate']):.1f}%\n",
+                    )
+        else:
+            text.insert("end", "暂无已记录对局\n")
+        text.configure(state="disabled")
+        text.tag_configure("title", font=("Segoe UI", 14, "bold"))
+        text.tag_configure("section", font=("Segoe UI", 11, "bold"), foreground="#24527a")
+
+    def _edit_current_deck(self) -> None:
+        deck = self._active_saved_deck()
+        if deck is None:
+            messagebox.showinfo("编辑卡组", "请先从本地牌组仓库选择牌组。", parent=self)
+            return
+        editor = tk.Toplevel(self)
+        editor.title(f"编辑卡组 - {deck.name}")
+        editor.geometry("700x600")
+        editor.transient(self)
+
+        counts = {card.card_id: card.count for card in deck.cards}
+        selected_id: int | None = None
+        total_var = tk.StringVar()
+        count_var = tk.IntVar(value=1)
+        catalog = load_card_catalog()
+        search_var = tk.StringVar()
+        choice_var = tk.StringVar()
+        option_ids: dict[str, int] = {}
+
+        ttk.Label(
+            editor,
+            text="选择牌组中的卡牌后修改数量；添加新卡时先选择卡牌再点击“添加”。总数必须保持 40 张。",
+        ).pack(anchor="w", padx=12, pady=(12, 6))
+        table = ttk.Treeview(editor, columns=("cost", "name", "count"), show="headings", height=20)
+        table.heading("cost", text="费用")
+        table.heading("name", text="卡牌名称")
+        table.heading("count", text="数量")
+        table.column("cost", width=70, anchor="center")
+        table.column("name", width=420)
+        table.column("count", width=80, anchor="center")
+        table.pack(fill="both", expand=True, padx=12)
+
+        controls = ttk.Frame(editor, padding=12)
+        controls.pack(fill="x")
+        ttk.Label(controls, text="选中数量").grid(row=0, column=0, sticky="w")
+        count_spin = ttk.Spinbox(controls, from_=0, to=3, textvariable=count_var, width=6)
+        count_spin.grid(row=0, column=1, padx=(6, 12), sticky="w")
+        ttk.Button(controls, text="应用数量", command=lambda: apply_count()).grid(row=0, column=2, padx=(0, 18))
+        ttk.Label(controls, textvariable=total_var).grid(row=0, column=3, rowspan=3, sticky="e")
+        ttk.Label(controls, text="搜索卡牌").grid(row=1, column=0, pady=(10, 0), sticky="w")
+        search_entry = ttk.Entry(controls, textvariable=search_var, width=24)
+        search_entry.grid(row=1, column=1, columnspan=2, padx=(6, 18), pady=(10, 0), sticky="ew")
+        ttk.Label(
+            controls,
+            text=self._deck_restriction_text(deck.class_id, deck.format_version),
+        ).grid(row=2, column=0, columnspan=3, pady=(6, 0), sticky="w")
+        choice = ttk.Combobox(controls, textvariable=choice_var, state="readonly", width=42)
+        choice.grid(row=3, column=0, columnspan=2, pady=(10, 0), sticky="ew")
+        ttk.Button(controls, text="添加新卡", command=lambda: add_card()).grid(row=3, column=2, pady=(10, 0), padx=(0, 18))
+        controls.columnconfigure(1, weight=1)
+
+        def refresh() -> None:
+            table.delete(*table.get_children())
+            for card_id, card_count in sorted(
+                counts.items(),
+                key=lambda item: (
+                    catalog.get(item[0]).cost if catalog.get(item[0]) else 999,
+                    catalog.get(item[0]).name if catalog.get(item[0]) else "未知卡牌",
+                ),
+            ):
+                metadata = catalog.get(card_id)
+                name = metadata.name if metadata else get_card_name(card_id)
+                cost = metadata.cost if metadata else "?"
+                table.insert("", "end", iid=str(card_id), values=(f"{cost}费", name, card_count))
+            total_var.set(f"当前总数：{sum(counts.values())} / 40")
+            refresh_options()
+
+        def refresh_options(*_args: object) -> None:
+            query = search_var.get().strip().casefold()
+            option_ids.clear()
+            labels: list[str] = []
+            duplicate_counts: dict[str, int] = {}
+            for card in sorted(catalog.values(), key=lambda value: (value.cost, value.name, value.card_id)):
+                if card.card_id in counts:
+                    continue
+                if not is_card_allowed(card.card_id, deck.class_id, deck.format_version):
+                    continue
+                if query and query not in card.name.casefold() and query not in str(card.card_id):
+                    continue
+                base = f"{card.cost}费 {card.name}"
+                duplicate_counts[base] = duplicate_counts.get(base, 0) + 1
+                label = base
+                if label in option_ids:
+                    label = f"{base}（{duplicate_counts[base]}）"
+                option_ids[label] = card.card_id
+                labels.append(label)
+            choice.configure(values=labels)
+            if choice_var.get() not in option_ids:
+                choice_var.set("")
+
+        def on_select(_event: object = None) -> None:
+            nonlocal selected_id
+            selection = table.selection()
+            if not selection:
+                selected_id = None
+                return
+            selected_id = int(selection[0])
+            count_var.set(counts[selected_id])
+
+        def apply_count() -> None:
+            nonlocal selected_id
+            if selected_id is None:
+                messagebox.showinfo("编辑卡组", "请先选中一张卡牌。", parent=editor)
+                return
+            try:
+                value = int(count_var.get())
+            except (TypeError, ValueError):
+                messagebox.showerror("数量错误", "数量必须是 0 到 3。", parent=editor)
+                return
+            if not 0 <= value <= 3:
+                messagebox.showerror("数量错误", "数量必须是 0 到 3。", parent=editor)
+                return
+            if value == 0:
+                counts.pop(selected_id, None)
+                selected_id = None
+            else:
+                counts[selected_id] = value
+            refresh()
+
+        def add_card() -> None:
+            value = option_ids.get(choice_var.get())
+            if value is None:
+                messagebox.showinfo("添加卡牌", "请先从下拉框选择卡牌。", parent=editor)
+                return
+            if value in counts:
+                messagebox.showinfo("添加卡牌", "该卡牌已经在当前牌组中，请直接修改数量。", parent=editor)
+                return
+            counts[value] = 1
+            refresh()
+            table.selection_set(str(value))
+            table.focus(str(value))
+            on_select()
+
+        def save_changes() -> None:
+            if sum(counts.values()) != 40:
+                messagebox.showerror("保存失败", "牌组必须正好包含 40 张牌。", parent=editor)
+                return
+            try:
+                updated = self._repository.update_cards(
+                    deck.key,
+                    tuple(DeckCard(card_id=card_id, count=count) for card_id, count in counts.items()),
+                )
+            except (OSError, KeyError, ValueError) as exc:
+                messagebox.showerror("保存失败", str(exc), parent=editor)
+                return
+            editor.destroy()
+            self._match_id = None
+            self._match_deck_key = None
+            self._refresh_deck_choices()
+            self.deck_status_var.set(f"已保存修改：{updated.name}（仍为同一统计卡组）")
+            if self._service and self._service.running:
+                self._service.set_selected_deck(updated.to_snapshot(), updated.key)
+            self._update_stats_summary()
+
+        table.bind("<<TreeviewSelect>>", on_select)
+        search_entry.bind("<KeyRelease>", refresh_options)
+        buttons = ttk.Frame(editor, padding=(12, 0, 12, 12))
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="保存修改", command=save_changes).pack(side="right")
+        ttk.Button(buttons, text="取消", command=editor.destroy).pack(side="right", padx=(0, 8))
+        refresh()
+
+    def _render_deck_info(self, deck: dict[str, object]) -> None:
+        if not deck:
+            self._set_text(self.deck_text, "请从本地牌组仓库选择牌组")
+            return
+        segments: list[tuple[str, str | None]] = [
+            (
+                f"{deck.get('deck_name') or '未命名牌组'}  "
+                f"（{class_name(deck.get('class_id') if isinstance(deck.get('class_id'), int) else None)} / "
+                f"{self._format_mode(deck.get('deck_format') if isinstance(deck.get('deck_format'), int) else 2)}）\n",
+                "deck_header",
+            ),
+            (f"剩余牌库：{deck.get('total_cards', '?')} / {deck.get('total_cards', '?')} 张\n", "deck_header"),
+            ("\n牌组卡牌\n", "deck_section"),
+        ]
+        cards = deck.get("cards", ())
+        if isinstance(cards, (list, tuple)):
+            for card in sorted((card for card in cards if isinstance(card, dict)), key=self._card_sort_key):
+                segments.append((self._format_deck_row({
+                    "card_id": card.get("card_id"),
+                    "remaining": card.get("count"),
+                    "initial": card.get("count"),
+                }) + "\n", None))
+        self._set_rich_text(self.deck_text, segments)
+
+    def _active_saved_deck(self) -> SavedDeck | None:
+        return self._repository.active()
+
+    def _active_deck_snapshot(self):
+        deck = self._active_saved_deck()
+        return deck.to_snapshot() if deck else None
+
+    def _refresh_deck_choices(self) -> None:
+        self._deck_choice_keys = [deck.key for deck in self._repository.decks]
+        labels = [
+            f"{deck.name}（{class_name(deck.class_id)} / {self._format_mode(deck.format_version)} / "
+            f"{len(deck.cards)} 种 / {deck.total_cards} 张）"
+            for deck in self._repository.decks
+        ]
+        self.deck_choice.configure(values=labels)
+        active = self._active_saved_deck()
+        if active is not None:
+            index = self._deck_choice_keys.index(active.key)
+            self.deck_choice.current(index)
+            self.deck_status_var.set(
+                f"已选择：{active.name}（{class_name(active.class_id)} / "
+                f"{self._format_mode(active.format_version)}）；仓库位置：{self._repository.path}"
+            )
+            self._render_deck_info(active.to_snapshot().to_dict())
+        else:
+            self.deck_choice.set("")
+            message = "尚未导入牌组，请粘贴官方牌组详情链接"
+            if self._repository_error:
+                message = f"牌组仓库读取失败：{self._repository_error}"
+            self.deck_status_var.set(message)
+            if hasattr(self, "deck_text"):
+                self._set_text(self.deck_text, "请先导入或选择牌组")
+
+    def _select_deck(self, _event: object = None) -> None:
+        index = self.deck_choice.current()
+        if not 0 <= index < len(self._deck_choice_keys):
+            return
+        try:
+            deck = self._repository.select(self._deck_choice_keys[index])
+        except (OSError, KeyError, ValueError) as exc:
+            messagebox.showerror("切换失败", str(exc), parent=self)
+            return
+        self.deck_status_var.set(
+            f"已选择：{deck.name}（{class_name(deck.class_id)} / "
+            f"{self._format_mode(deck.format_version)}）；后续账本使用此牌组"
+        )
+        self._match_id = None
+        self._match_deck_key = None
+        self._render_deck_info(deck.to_snapshot().to_dict())
+        if self._service and self._service.running:
+            self._service.set_selected_deck(deck.to_snapshot(), deck.key)
+        self._update_stats_summary()
+
+    def _import_deck(self) -> None:
+        raw = self.deck_url_var.get().strip()
+        if not raw:
+            try:
+                raw = self.clipboard_get().strip()
+            except tk.TclError:
+                raw = ""
+        try:
+            parsed = self._parse_deck_input(raw)
+        except OfficialDeckError as exc:
+            messagebox.showerror("导入失败", str(exc), parent=self)
+            return
+        self._save_imported_deck(parsed)
+
+    @staticmethod
+    def _parse_deck_input(raw: str) -> OfficialDeck:
+        """Accept either a full official hash/link or a four-character code.
+
+        Official QR codes can encode either representation, so both import
+        paths intentionally use this single resolver.
+        """
+        value = str(raw or "").strip()
+        return import_deck_code(value) if len(value) == 4 and "." not in value else parse_official_deck(value)
+
+    def _save_imported_deck(self, parsed: OfficialDeck) -> None:
+        selected_class = next(
+            (class_id for class_id, label in CLASS_NAMES.items() if label == self.import_class_var.get()),
+            parsed.class_id,
+        )
+        selected_format = 1 if self.import_mode_var.get() == "轮换" else 2
+        # The visible registration fields are authoritative.  This lets a
+        # user correct an outdated class/format in a copied link while keeping
+        # the original URL as the source for traceability.
+        parsed = OfficialDeck(
+            format_version=selected_format,
+            class_id=selected_class,
+            cards=parsed.cards,
+            source=parsed.source,
+        )
+        preview_names = [get_card_name(card.card_id) for card in parsed.cards[:2]]
+        default_name = " / ".join(preview_names) + " 牌组"
+        name = simpledialog.askstring(
+            "保存牌组",
+            "请输入本地牌组名称：",
+            initialvalue=default_name,
+            parent=self,
+        )
+        if name is None:
+            return
+        try:
+            saved = self._repository.add_official(name, parsed)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("保存失败", str(exc), parent=self)
+            return
+        self.deck_url_var.set("")
+        self._repository_error = ""
+        self._refresh_deck_choices()
+        self.deck_status_var.set(
+            f"已导入并选择：{saved.name}（{class_name(saved.class_id)} / "
+            f"{self._format_mode(saved.format_version)} / 40 张）"
+        )
+        self._match_id = None
+        self._match_deck_key = None
+        if self._service and self._service.running:
+            self._service.set_selected_deck(saved.to_snapshot(), saved.key)
+        self._update_stats_summary()
+
+    @staticmethod
+    def _deck_restriction_text(class_id: int, format_version: int) -> str:
+        class_label = class_name(class_id)
+        if int(format_version) == 1:
+            newest = latest_card_pack()
+            return f"可添加：{class_label} + 中立；轮换卡包 {max(0, newest - 5)}–{newest}"
+        return f"可添加：{class_label} + 中立；无限模式不限制卡包"
+
+    @staticmethod
+    def _format_mode(format_version: int) -> str:
+        return "轮换" if int(format_version) == 1 else "无限"
+
+    def _delete_deck(self) -> None:
+        deck = self._active_saved_deck()
+        if deck is None:
+            return
+        if not messagebox.askyesno(
+            "删除牌组",
+            f"确定从本地仓库删除“{deck.name}”吗？",
+            parent=self,
+        ):
+            return
+        try:
+            self._repository.delete(deck.key)
+        except (OSError, KeyError, ValueError) as exc:
+            messagebox.showerror("删除失败", str(exc), parent=self)
+            return
+        self._refresh_deck_choices()
+        active = self._active_deck_snapshot()
+        self._match_id = None
+        self._match_deck_key = None
+        if self._service and self._service.running:
+            active_saved = self._active_saved_deck()
+            self._service.set_selected_deck(active, active_saved.key if active_saved else None)
+        self._update_stats_summary()
+
+    @staticmethod
+    def _format_field(cards: object) -> list[str]:
+        if not isinstance(cards, (list, tuple)):
+            return []
+        return [
+            f"{TrackerApp._format_card_line(card)}  "
+            f"{card.get('attack')}/{card.get('life')}  进化={card.get('evolve_state')}"
+            for card in cards if isinstance(card, dict)
+        ]
+
+    @staticmethod
+    def _format_recent_history(mine: dict[str, object], opponent: dict[str, object]) -> str:
+        def format_cards(value: object) -> list[str]:
+            if not isinstance(value, (list, tuple)):
+                return []
+            lines: list[str] = []
+            for item in value[-10:]:
+                if isinstance(item, (list, tuple)) and item:
+                    lines.append(TrackerApp._card_label(item[0]))
+                elif isinstance(item, int):
+                    lines.append(TrackerApp._card_label(item))
+                else:
+                    lines.append(str(item))
+            return lines
+
+        mine_lines = format_cards(mine.get("played_card_ids", ()))
+        opponent_lines = format_cards(opponent.get("played_card_ids", ()))
+        if not mine_lines:
+            mine_lines = ["（暂无）"]
+        if not opponent_lines:
+            opponent_lines = ["（暂无公开记录）"]
+        return (
+            "我方使用：\n"
+            + "\n".join(mine_lines)
+            + "\n\n对方使用（公开）：\n"
+            + "\n".join(opponent_lines)
+        )
+
+    def _format_known_opponent_hand(self) -> list[str]:
+        if not self._opponent_known_hand.cards:
+            return ["（暂无已知明牌）"]
+        values = list(self._opponent_known_hand.cards.items())
+        values.sort(
+            key=lambda item: (
+                999
+                if item[0] == "unknown_spell"
+                else (
+                    get_card_metadata(int(item[0])).cost
+                    if isinstance(item[0], int) and get_card_metadata(int(item[0])) is not None
+                    else 999
+                ),
+                "未知法术" if item[0] == "unknown_spell" else get_card_name(int(item[0])),
+            )
+        )
+        lines: list[str] = []
+        for value, count in values:
+            if not isinstance(count, int) or count <= 0:
+                continue
+            name = "未知法术" if value == "unknown_spell" else get_card_name(int(value))
+            lines.append(f"{name}：{count}")
+        return lines or ["（暂无已知明牌）"]
+
+    def _format_opponent_hand(self, opponent: dict[str, object]) -> list[str]:
+        hand = opponent.get("hand")
+        if isinstance(hand, (list, tuple)):
+            visible = [card for card in hand if isinstance(card, dict) and not card.get("hidden")]
+            if visible:
+                return [self._format_card_line(card) for card in visible]
+        return self._format_known_opponent_hand()
+
+    @staticmethod
+    def _card_label(value: object) -> str:
+        if not isinstance(value, int) or value <= 0:
+            return str(value)
+        return get_card_name(value)
+
+    @staticmethod
+    def _format_card_line(card: dict[str, object]) -> str:
+        value = card.get("base_card_id") or card.get("card_id")
+        name = TrackerApp._card_label(value)
+        cost = card.get("cost")
+        if not isinstance(cost, int):
+            metadata = get_card_metadata(value) if isinstance(value, int) and value > 0 else None
+            cost = metadata.cost if metadata is not None else "?"
+        return f"{cost}费 {name}"
+
+    @staticmethod
+    def _card_sort_key(card: dict[str, object]) -> tuple[int, str]:
+        value = card.get("card_id")
+        metadata = get_card_metadata(value) if isinstance(value, int) and value > 0 else None
+        return (metadata.cost if metadata is not None else 999, get_card_name(value) if isinstance(value, int) else "未知卡牌")
+
+    @staticmethod
+    def _format_deck_row(row: dict[str, object]) -> str:
+        value = row.get("card_id")
+        name = TrackerApp._card_label(value)
+        metadata = get_card_metadata(value) if isinstance(value, int) and value > 0 else None
+        cost = metadata.cost if metadata is not None else "?"
+        return f"{cost}费 {name}  {row.get('remaining')}/{row.get('initial')}"
+
+    def _close(self) -> None:
+        if self._overlay is not None:
+            try:
+                self._overlay.destroy()
+            except tk.TclError:
+                pass
+            self._overlay = None
+            self._overlay_canvas = None
+        if self._service:
+            self._service.stop()
+        self.destroy()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--model", type=lambda value: int(value, 0), help="BattleModel address")
+    args = parser.parse_args()
+    TrackerApp(args).mainloop()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# IDE and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local output and logs
+build/
+dist/
+logs/
+captures/
+screenshots/
+*.log
+x64dbg_state.png
+
+# Deprecated local UI background assets
+src/shadowverse_tracker/data/backgrounds/
+src/shadowverse_tracker/data/tracker_background.png
+
+# Reverse-engineering outputs and game files
+reverse/versions/*/global-metadata.dat
+reverse/versions/*/global-metadata.raw
+reverse/versions/*/metadata-probe.json
+reverse/versions/*/DummyDll/
+reverse/versions/*/dump.cs
+reverse/versions/*/script.json
+reverse/versions/*/dumper*/
+*.dmp
+GameAssembly.dll
+UnityPlayer.dll
+libnative.dll
+
+# Local configuration and secrets
+.env
+*.local.json

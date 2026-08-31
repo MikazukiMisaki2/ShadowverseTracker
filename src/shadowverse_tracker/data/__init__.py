@@ -1,0 +1,1 @@
+"""Packaged static card metadata."""

@@ -1,0 +1,10 @@
+{
+  "game_version": "1.9.0.17891",
+  "unity_version": "2022.3.62f2",
+  "process_name": "ShadowverseWB.exe",
+  "module_name": "GameAssembly.dll",
+  "gameassembly_sha256": "A630B7505AFF4FDC0B2FEDD85EA7FFAA616CBBE5787AB37728C7FAA30B0218D4",
+  "battle_model_class_pointer_rva": "0x8E29498",
+  "deck_info_class_pointer_rva": "0x8F081E8",
+  "practice_battle_model_class_pointer_rva": "0x8F03970"
+}
