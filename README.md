@@ -1,140 +1,65 @@
 # Shadowverse Tracker
 
-《Shadowverse: Worlds Beyond》的 Windows 外置只读记牌器。它通过读取本机游戏进程的公开对局状态来维护牌库与对局记录；不修改游戏文件、不注入 DLL，也不会暂停游戏。
+《Shadowverse: Worlds Beyond》Windows 只读记牌器。Tracker 会读取本机游戏进程中的对局状态，用于显示牌库、手牌、场面、计数器和对局记录；不会修改游戏文件、注入 DLL 或暂停游戏。
 
-> 当前读取配置对应游戏版本 `1.9.0.17891`。游戏更新后，程序会在版本校验失败时停止读取，避免套用旧偏移产生错误数据。
+## 开始使用
 
-## 当前功能
+1. 从项目发布页下载最新版 `ShadowverseTracker.zip`。
+2. 将压缩包完整解压到独立文件夹。请保留 `ShadowverseTracker.exe`、`_internal` 和 `SV_WB_Cards`，不要只复制 EXE 文件。
+3. 先启动游戏，再双击 `ShadowverseTracker.exe`。
+4. Tracker 会自动寻找游戏和当前对局，不需要填写地址或点击“开始读取”。
+5. 在“当前牌组”中选择或导入自己的牌组，记牌器才能准确维护剩余牌库。
 
-- 启动 Tracker 后自动等待游戏、自动连接对局；一局结束后会继续等待下一局。
-- 显示我方手牌、双方公开场面、双方生命、PP、牌库数量与近期使用记录。
-- 使用本地已选牌组维护剩余牌库；抽空的牌会保留为 `0/3`，悬浮牌库会以红色标记。
-- `SV_WB_Cards` 卡图资源存在时，悬浮牌库优先显示卡图；缺图时才显示名称。
-- 内置官方卡库效果数据，包含技能文本、Token 关联 ID 与卡牌类型，可用于明牌规则和训练特征。
-- 本地牌组仓库：可从官方牌组链接、hash 或四位临时牌组码导入，也可在 Tracker 内搜索、增删和调整卡牌。
-- 牌组登记会选择职业与模式；新增卡牌限制为本职业或中立，轮换模式按当前卡包范围过滤。
-- 对局记录：按当前牌组统计总胜率、各职业对局，以及先手/后手胜率。
-- 抽牌概率：选择尚未抽空的牌并输入未来抽牌次数，计算至少抽到一张的概率。
-- 人机本地对局中会显示客户端保存的对手手牌；在线对局只显示公开或可推断的信息。
+## 主要功能
 
-## 直接运行发布版（推荐）
+- 显示我方手牌、双方公开场面、生命值、PP 和牌库数量。
+- 记录起手牌、换牌、每回合抽牌、使用卡牌、进化和爆牌。
+- 根据已选择牌组维护剩余牌库；已抽空的卡牌会保留并标记为 `0/3`。
+- 提供悬浮牌库窗口，方便在游戏中查看。
+- 统计总胜率、对手职业、先手/后手等本地对局数据。
+- 计算普通抽牌概率，以及对手当前和下回合的 Key 牌概率。
 
-从 GitHub Release 下载 `ShadowverseTracker.zip` 后，**完整解压**再运行：
+## 牌组管理
 
-```text
-ShadowverseTracker/
-├─ ShadowverseTracker.exe
-├─ _internal/
-└─ SV_WB_Cards/
-```
+可以在“链接 / 四位牌组码”中导入官方牌组链接、hash 或四位牌组码，也可以在 Tracker 内搜索、编辑和保存牌组。四位牌组码通常只有短暂有效期，失效后请重新生成。
 
-双击 `ShadowverseTracker.exe` 即可。不要只把 EXE 单独移走：`_internal` 与 `SV_WB_Cards` 都是运行所需文件，后者包含卡图与卡牌资源。
-
-运行发布版不需要安装 Python、Pillow、PyInstaller 或二维码识别组件。请在同一台 Windows 电脑上启动游戏和 Tracker；如果进程读取被系统拒绝，请让两者以相同权限运行。
-
-## 从源码运行
-
-### 必需环境
-
-- Windows 10/11
-- Python 3.11 或更新版本
-- 已安装并能启动的《Shadowverse: Worlds Beyond》
-- 项目根目录中的 `SV_WB_Cards/` 资源目录（仓库内已包含，用于卡图）
-
-Python 依赖只有 [Pillow](https://pypi.org/project/pillow/)，用于在 Tkinter 中显示 WebP 卡图；其余读取功能使用 Python 标准库与 Windows API。二维码导入已从当前版本移除，因此**不需要** OpenCV、pyzbar 等二维码依赖。
-
-在 PowerShell 中执行：
-
-```powershell
-cd D:\Github\ShadowverseTracker
-py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -e .
-python run_tracker.py
-```
-
-如果 PowerShell 阻止激活脚本，可仅对当前窗口执行：
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-```
-
-也可以不创建虚拟环境，直接安装后运行：
-
-```powershell
-py -3.11 -m pip install -e .
-py -3.11 run_tracker.py
-```
-
-## 使用说明
-
-1. 启动 Tracker；它会自动等待游戏进程，无需手动填写 BattleModel 地址或点击连接。
-2. 在“当前牌组”中选择已有牌组，或选择职业与模式后，在“链接 / 四位牌组码”中粘贴官方牌组链接、hash、或刚生成的四位牌组码，再导入保存。
-3. 四位牌组码由官方服务查询，通常只有短暂有效期；过期或查询失败时请重新生成，或改用官方链接。
-4. 卡组有小幅调整时，使用“编辑当前卡组”搜索并增删卡牌。保存不会重置该牌组已有胜率。
-5. 勾选“启用对局记录（本地）”即可记录已识别终局；统计窗口会分开显示总计、对职业胜率、先手与后手胜率。
-
-本地数据默认保存在：
+本地数据保存在：
 
 ```text
 %LOCALAPPDATA%\ShadowverseTracker\decks.json
 %LOCALAPPDATA%\ShadowverseTracker\matches.json
 ```
 
-## 构建发布包
+## Key 概率
 
-构建机需要 Python 3.11+、Pillow 与 PyInstaller。脚本会自动安装后两者，并把卡图、卡牌 CSV、效果 JSON 和版本配置一起打入产物：
+Tracker 默认使用 `unknown`（未知策略）。这表示无法确定对手留下的是目标 Key，还是其他同样可能被保留的牌，因此不把换牌数量或“看到对手留牌”直接当作 Key 证据。
 
-```powershell
-cd D:\Github\ShadowverseTracker
-powershell -ExecutionPolicy Bypass -File .\scripts\build_release.ps1
-```
-
-默认输出是启动更快的目录版：
+计算会把“剩余牌库 + 未知手牌”视为随机池。设剩余 Key 数为 `K`、剩余牌库为 `D`、未知手牌为 `H`，则当前至少有一张 Key 的概率为：
 
 ```text
-dist\ShadowverseTracker\ShadowverseTracker.exe
+1 - C(D, K) / C(D + H, K)
 ```
 
-如确实需要单个 EXE：
+“对手下回合 Key 概率”会先模拟对手下一回合从牌库抽 1 张，再用抽牌后的牌库和未知手牌数量计算。只有在明确知道对手留牌规则时，才建议切换到 `known`。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\build_release.ps1 -OneFile
-```
+## 常见问题
 
-由于卡图资源接近 200 MB，推荐默认目录版；发布时将整个 `dist\ShadowverseTracker` 压缩为 ZIP 上传到 GitHub Release。
+### 显示未连接或版本校验失败
 
-### 更新卡牌效果数据
+请确认游戏已经启动，并让游戏与 Tracker 使用相同的权限运行。游戏更新后，旧版本配置可能暂时无法读取，请等待 Tracker 更新。
 
-官方卡库会随新卡包更新。联网时可运行以下命令重新抓取简体中文卡牌效果（输出到
-`src\shadowverse_tracker\data\card_effects_chs.json`）：
+### 牌库数量不准确
 
-```powershell
-python scripts\update_card_effect_data.py
-```
+请确认选择了正确的本地牌组。Token、生成牌、隐藏信息和未识别事件无法始终被准确推断；对局结束后会自动清理当前对局数据。
 
-### 对手关键牌概率计算器
+### 对手隐藏手牌
 
-Tracker 主界面会自动填入对手牌库、未知手牌和换牌数量；留牌策略及 Key 参数仍由用户填写。也可以单独运行完全手动输入的窗口：
+在线对局只显示游戏公开或能够从公开效果可靠推断出的信息，不会读取或显示对手隐藏手牌身份。
 
-```powershell
-python scripts\opponent_key_probability_app.py
-```
+## 免责声明
 
-默认策略为 `unknown`：不假设对手实际留下的是 Key，也不把换牌数当作 Key 的证据；只在“未知、来自牌库的手牌 + 剩余牌库”这个总池中，以超几何分布计算至少持有 1 张 Key 的概率。只有已明确掌握对手留牌规则、留牌类型和换牌数时，才适合切换到 `known`。
+本项目是非官方的个人研究工具，与 Cygames、Shadowverse 或 Steam 无关。程序按“尽力而为”提供信息，不能保证读取结果、概率结果或对局记录始终准确，也不构成游戏策略、账号安全或竞技公平性的保证。
 
-该脚本只保存卡牌效果、Token 关联和训练所需字段，不会修改游戏文件；更新后重新构建发布包即可。
+虽然 Tracker 设计为只读访问，但用户应自行确认游戏规则、平台规则和赛事规则是否允许使用外部辅助工具。请勿在禁止使用此类工具的环境中运行；因使用本程序造成的账号处罚、数据损失、兼容性问题或其他后果，由使用者自行承担。
 
-## 测试
-
-```powershell
-python -m unittest discover -s tests -q
-```
-
-## 限制与说明
-
-- 这是针对特定游戏版本的研究项目；版本更新后需要新的版本配置才能恢复读取。
-- Tracker 始终以只读方式访问进程，不会改写内存、游戏文件或网络数据。
-- 在线对局不会显示对手隐藏手牌身份。
-- 请自行确认卡图等第三方资源的使用与再分发许可。
+程序主要在本机保存牌组和对局数据。请在分享日志、截图或训练数据前，自行检查其中是否包含个人信息或对局信息。

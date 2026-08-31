@@ -5,7 +5,7 @@ a = Analysis(
     ['D:/Github/ShadowverseTracker/run_tracker.py'],
     pathex=['D:/Github/ShadowverseTracker/src'],
     binaries=[],
-    datas=[('D:/Github/ShadowverseTracker/SV_WB_Cards', 'SV_WB_Cards'), ('D:/Github/ShadowverseTracker/src/shadowverse_tracker/data/SV_WB_Cards.csv', 'shadowverse_tracker/data'), ('D:/Github/ShadowverseTracker/src/shadowverse_tracker/version_profiles', 'shadowverse_tracker/version_profiles')],
+    datas=[('D:/Github/ShadowverseTracker/SV_WB_Cards', 'SV_WB_Cards'), ('D:/Github/ShadowverseTracker/src/shadowverse_tracker/data/SV_WB_Cards.csv', 'shadowverse_tracker/data'), ('D:/Github/ShadowverseTracker/src/shadowverse_tracker/data/card_effects_chs.json', 'shadowverse_tracker/data'), ('D:/Github/ShadowverseTracker/src/shadowverse_tracker/version_profiles', 'shadowverse_tracker/version_profiles')],
     hiddenimports=['shadowverse_tracker.version_profiles'],
     hookspath=[],
     hooksconfig={},
