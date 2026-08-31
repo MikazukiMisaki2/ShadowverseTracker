@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # The order used by the official deck format.  Keep the numeric ID in records
 # as well, so an updated translation can be applied without losing history.
@@ -50,6 +50,10 @@ def result_label(result_code: int, self_life: int | None, opponent_life: int | N
     if self_life is not None and self_life <= 0:
         return "失败"
     if result_code == 101:
+        return "胜利"
+    # 105 is the opponent-surrender terminal result.  Both life totals can
+    # remain positive, so it cannot be inferred from the board alone.
+    if result_code == 105:
         return "胜利"
     # Shadowverse WB uses 106 for the local player's surrender result.  Life
     # totals remain non-zero in this case, so it must be handled explicitly.
@@ -100,7 +104,7 @@ class MatchHistory:
         if not self.path.exists():
             return self
         value = json.loads(self.path.read_text(encoding="utf-8"))
-        if not isinstance(value, dict) or int(value.get("schema_version", 0)) not in (1, SCHEMA_VERSION):
+        if not isinstance(value, dict) or int(value.get("schema_version", 0)) not in (1, 2, SCHEMA_VERSION):
             raise ValueError("不支持的对局记录格式")
         migrated = int(value.get("schema_version", 0)) != SCHEMA_VERSION
         records = value.get("records", ())
@@ -113,8 +117,8 @@ class MatchHistory:
             try:
                 result_code = int(item.get("result_code", 0))
                 result = str(item["result"])
-                if result_code == 106 and result == "结束":
-                    result = "失败"
+                if result == "结束" and result_code in {105, 106}:
+                    result = "胜利" if result_code == 105 else "失败"
                     migrated = True
                 parsed.append(MatchRecord(
                     match_id=str(item["match_id"]),
@@ -152,11 +156,23 @@ class MatchHistory:
         self.save()
         return True
 
+    def clear_deck(self, deck_key: str) -> int:
+        """Delete all locally saved match records for one deck."""
+        before = len(self.records)
+        self.records = [record for record in self.records if record.deck_key != deck_key]
+        removed = before - len(self.records)
+        if removed:
+            self.save()
+        return removed
+
     def for_deck(self, deck_key: str) -> list[MatchRecord]:
         return [record for record in self.records if record.deck_key == deck_key]
 
     def stats(self, deck_key: str) -> dict[str, object]:
-        records = self.for_deck(deck_key)
+        # A record labelled ``结束`` is retained for diagnostics but is not a
+        # completed result. In normal operation 105/106 are migrated above,
+        # so all displayed games have a win or loss.
+        records = [record for record in self.for_deck(deck_key) if record.result in {"胜利", "失败"}]
         grouped: dict[str, dict[str, int | float | dict[str, int | float]]] = {}
         for record in records:
             group = grouped.setdefault(record.opponent_class, {

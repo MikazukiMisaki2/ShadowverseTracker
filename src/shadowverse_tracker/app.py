@@ -38,6 +38,8 @@ class TrackerApp(tk.Tk):
     def __init__(self, args: argparse.Namespace) -> None:
         super().__init__()
         self.title("Shadowverse Tracker")
+        self._app_icon: object | None = None
+        self._set_application_icon()
         self.geometry("1280x760")
         self.minsize(1000, 620)
         self._events: queue.Queue[tuple[str, object]] = queue.Queue()
@@ -273,6 +275,32 @@ class TrackerApp(tk.Tk):
         self._refresh_deck_choices()
         self._update_stats_summary()
 
+    @staticmethod
+    def _app_asset_path(name: str) -> Path | None:
+        """Locate bundled UI assets in both source and PyInstaller runs."""
+        package_root = Path(__file__).resolve().parent
+        roots = [package_root / "assets"]
+        frozen_root = getattr(sys, "_MEIPASS", None)
+        if frozen_root:
+            roots.insert(0, Path(frozen_root) / "shadowverse_tracker" / "assets")
+        return next((root / name for root in roots if (root / name).is_file()), None)
+
+    def _set_application_icon(self) -> None:
+        """Use Kandima artwork for the title bar, taskbar, and app icon."""
+        icon_ico = self._app_asset_path("kandima_icon.ico")
+        if icon_ico is not None:
+            try:
+                self.iconbitmap(default=str(icon_ico))
+            except tk.TclError:
+                pass
+        icon_png = self._app_asset_path("kandima_icon.png")
+        if icon_png is not None:
+            try:
+                self._app_icon = tk.PhotoImage(file=str(icon_png))
+                self.iconphoto(True, self._app_icon)
+            except tk.TclError:
+                pass
+
     def _toggle_overlay(self) -> None:
         """Show or hide the lightweight Canvas overlay."""
         if self._overlay is not None and self._overlay.winfo_exists():
@@ -409,9 +437,22 @@ class TrackerApp(tk.Tk):
         canvas.create_rectangle(8, 8, width - 8, height - 8, fill=panel, outline=border, width=1)
         canvas.create_text(20, 16, anchor="nw", text=self._overlay_win_rate_summary(), fill=text, font=("Segoe UI", 10, "bold"))
         if not isinstance(snapshot, dict):
-            canvas.create_text(24, 42, anchor="nw", text="等待对局数据…", fill=text, font=("Segoe UI", 13, "bold"))
-            canvas.create_text(24, 70, anchor="nw", text="拖动此窗口可调整位置，Esc 关闭", fill=muted, font=("Segoe UI", 10))
-            return
+            active = self._active_saved_deck()
+            if active is None:
+                canvas.create_text(24, 42, anchor="nw", text="等待对局数据…", fill=text, font=("Segoe UI", 13, "bold"))
+                canvas.create_text(24, 70, anchor="nw", text="拖动此窗口可调整位置，Esc 关闭", fill=muted, font=("Segoe UI", 10))
+                return
+            snapshot = {
+                "root": {"players": [{"deck_count": active.total_cards}, {}]},
+                "deck_ledger": {
+                    "deck_name": active.name,
+                    "authoritative_deck_count": active.total_cards,
+                    "rows": [
+                        {"card_id": card.card_id, "initial": card.count, "remaining": card.count}
+                        for card in active.cards
+                    ],
+                },
+            }
         root = snapshot.get("root")
         players = root.get("players", []) if isinstance(root, dict) else []
         if not isinstance(players, (list, tuple)) or len(players) < 2 or not all(isinstance(p, dict) for p in players[:2]):
@@ -493,9 +534,9 @@ class TrackerApp(tk.Tk):
         first = stats["first"]
         second = stats["second"]
         return (
-            f"总胜率 {float(stats['win_rate']):.1f}%    "
-            f"先手胜率 {float(first['win_rate']):.1f}%    "
-            f"后手胜率 {float(second['win_rate']):.1f}%"
+            f"总胜率 {float(stats['win_rate']):.1f}%（{int(stats['finished'])}局）    "
+            f"先手胜率 {float(first['win_rate']):.1f}%（{int(first['finished'])}局）    "
+            f"后手胜率 {float(second['win_rate']):.1f}%（{int(second['finished'])}局）"
         )
 
     @staticmethod
@@ -893,7 +934,7 @@ class TrackerApp(tk.Tk):
         self.key_mulligan_var.set("—")
         self.key_probability_result_var.set("等待下一局对手数据")
         self._set_text(self.hand_text, "等待下一局")
-        self._set_text(self.deck_text, "等待下一局")
+        self._render_active_deck_full()
         self._set_text(self.field_text, "等待下一局")
         self._set_text(self.history_text, "等待下一局")
         self._render_overlay(None)
@@ -1016,6 +1057,13 @@ class TrackerApp(tk.Tk):
         window = tk.Toplevel(self)
         window.title(f"对局统计 - {active.name}")
         window.geometry("620x420")
+        buttons = ttk.Frame(window, padding=(12, 0, 12, 10))
+        buttons.pack(fill="x", side="bottom")
+        ttk.Button(
+            buttons,
+            text="重置当前牌组胜率",
+            command=lambda: self._reset_match_stats(active, window),
+        ).pack(side="right")
         text = tk.Text(window, wrap="none", state="normal", padx=12, pady=12)
         text.pack(fill="both", expand=True)
         text.insert("end", f"{active.name}\n", "title")
@@ -1044,6 +1092,23 @@ class TrackerApp(tk.Tk):
         text.tag_configure("title", font=("Segoe UI", 14, "bold"))
         text.tag_configure("section", font=("Segoe UI", 11, "bold"), foreground="#24527a")
 
+    def _reset_match_stats(self, active: SavedDeck, window: tk.Toplevel) -> None:
+        stats = self._match_history.stats(active.key)
+        if not messagebox.askyesno(
+            "重置胜率",
+            f"确定清除“{active.name}”的 {stats['total']} 局胜负统计吗？\n此操作不可恢复。",
+            parent=window,
+        ):
+            return
+        try:
+            removed = self._match_history.clear_deck(active.key)
+        except OSError as exc:
+            messagebox.showerror("重置失败", str(exc), parent=window)
+            return
+        self._update_stats_summary()
+        window.destroy()
+        messagebox.showinfo("对局统计", f"已清除 {removed} 局对局记录。", parent=self)
+
     def _edit_current_deck(self) -> None:
         deck = self._active_saved_deck()
         if deck is None:
@@ -1051,7 +1116,10 @@ class TrackerApp(tk.Tk):
             return
         editor = tk.Toplevel(self)
         editor.title(f"编辑卡组 - {deck.name}")
-        editor.geometry("700x600")
+        # Keep the save bar visible even on a 720p screen.  The card table
+        # receives the flexible middle area instead of imposing 20 fixed rows.
+        editor.geometry("760x680")
+        editor.minsize(620, 520)
         editor.transient(self)
 
         counts = {card.card_id: card.count for card in deck.cards}
@@ -1067,7 +1135,14 @@ class TrackerApp(tk.Tk):
             editor,
             text="选择牌组中的卡牌后修改数量；添加新卡时先选择卡牌再点击“添加”。总数必须保持 40 张。",
         ).pack(anchor="w", padx=12, pady=(12, 6))
-        table = ttk.Treeview(editor, columns=("cost", "name", "count"), show="headings", height=20)
+        buttons = ttk.Frame(editor, padding=(12, 0, 12, 12))
+        buttons.pack(fill="x", side="bottom")
+        ttk.Button(buttons, text="保存修改", command=lambda: save_changes()).pack(side="right")
+        ttk.Button(buttons, text="取消", command=editor.destroy).pack(side="right", padx=(0, 8))
+
+        controls = ttk.Frame(editor, padding=12)
+        controls.pack(fill="x", side="bottom")
+        table = ttk.Treeview(editor, columns=("cost", "name", "count"), show="headings", height=12)
         table.heading("cost", text="费用")
         table.heading("name", text="卡牌名称")
         table.heading("count", text="数量")
@@ -1075,9 +1150,6 @@ class TrackerApp(tk.Tk):
         table.column("name", width=420)
         table.column("count", width=80, anchor="center")
         table.pack(fill="both", expand=True, padx=12)
-
-        controls = ttk.Frame(editor, padding=12)
-        controls.pack(fill="x")
         ttk.Label(controls, text="选中数量").grid(row=0, column=0, sticky="w")
         count_spin = ttk.Spinbox(controls, from_=0, to=3, textvariable=count_var, width=6)
         count_spin.grid(row=0, column=1, padx=(6, 12), sticky="w")
@@ -1200,10 +1272,6 @@ class TrackerApp(tk.Tk):
 
         table.bind("<<TreeviewSelect>>", on_select)
         search_entry.bind("<KeyRelease>", refresh_options)
-        buttons = ttk.Frame(editor, padding=(12, 0, 12, 12))
-        buttons.pack(fill="x")
-        ttk.Button(buttons, text="保存修改", command=save_changes).pack(side="right")
-        ttk.Button(buttons, text="取消", command=editor.destroy).pack(side="right", padx=(0, 8))
         refresh()
 
     def _render_deck_info(self, deck: dict[str, object]) -> None:
@@ -1229,6 +1297,19 @@ class TrackerApp(tk.Tk):
                     "initial": card.get("count"),
                 }) + "\n", None))
         self._set_rich_text(self.deck_text, segments)
+
+    def _render_active_deck_full(self) -> None:
+        active = self._active_saved_deck()
+        if active is None:
+            self._set_text(self.deck_text, "请从本地牌组仓库选择牌组")
+            return
+        self._render_deck_info({
+            "deck_name": active.name,
+            "class_id": active.class_id,
+            "deck_format": active.format_version,
+            "total_cards": active.total_cards,
+            "cards": [card.__dict__ for card in active.cards],
+        })
 
     def _active_saved_deck(self) -> SavedDeck | None:
         return self._repository.active()

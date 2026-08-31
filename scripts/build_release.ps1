@@ -8,6 +8,8 @@ $cardImages = Join-Path $projectRoot 'SV_WB_Cards'
 $catalogCsv = Join-Path $projectRoot 'src\shadowverse_tracker\data\SV_WB_Cards.csv'
 $cardEffects = Join-Path $projectRoot 'src\shadowverse_tracker\data\card_effects_chs.json'
 $versionProfiles = Join-Path $projectRoot 'src\shadowverse_tracker\version_profiles'
+$appAssets = Join-Path $projectRoot 'src\shadowverse_tracker\assets'
+$appIcon = Join-Path $appAssets 'kandima_icon.ico'
 
 if (-not (Test-Path -LiteralPath $cardImages)) {
     throw "未找到卡图资源：$cardImages"
@@ -21,6 +23,9 @@ if (-not (Test-Path -LiteralPath $cardEffects)) {
 if (-not (Test-Path -LiteralPath $versionProfiles)) {
     throw "未找到版本配置：$versionProfiles"
 }
+if (-not (Test-Path -LiteralPath $appIcon)) {
+    throw "未找到应用图标：$appIcon"
+}
 
 python -m pip install pyinstaller Pillow
 
@@ -32,6 +37,8 @@ $arguments = @(
     '--add-data', "$catalogCsv;shadowverse_tracker\\data",
     '--add-data', "$cardEffects;shadowverse_tracker\\data",
     '--add-data', "$versionProfiles;shadowverse_tracker\\version_profiles",
+    '--add-data', "$appAssets;shadowverse_tracker\\assets",
+    '--icon', $appIcon,
     '--hidden-import', 'shadowverse_tracker.version_profiles',
     '--exclude-module', 'numpy',
     '--paths', (Join-Path $projectRoot 'src')

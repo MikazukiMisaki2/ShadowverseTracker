@@ -50,6 +50,7 @@ class MatchHistoryTests(unittest.TestCase):
 
     def test_result_classification_is_conservative(self) -> None:
         self.assertEqual(result_label(101, 20, 10), "胜利")
+        self.assertEqual(result_label(105, 20, 10), "胜利")
         self.assertEqual(result_label(999, 20, 0), "胜利")
         self.assertEqual(result_label(999, 0, 20), "失败")
         self.assertEqual(result_label(106, 20, 10), "失败")
@@ -67,6 +68,30 @@ class MatchHistoryTests(unittest.TestCase):
             history = MatchHistory(path).load()
             self.assertEqual(history.records[0].result, "失败")
             self.assertEqual(MatchHistory(path).load().records[0].result, "失败")
+
+    def test_migrates_opponent_surrender_to_win(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "matches.json"
+            path.write_text(
+                '{"schema_version": 2, "records": [{'
+                '"match_id":"m1","timestamp":"t","deck_key":"d",'
+                '"deck_name":"牌组","self_class_id":5,"opponent_class_id":1,'
+                '"opponent_class":"精灵","result":"结束","result_code":105,"turn":1}]}',
+                encoding="utf-8",
+            )
+            history = MatchHistory(path).load()
+            self.assertEqual(history.records[0].result, "胜利")
+            self.assertEqual(history.stats("d")["wins"], 1)
+
+    def test_clear_deck_removes_only_that_decks_records(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            history = MatchHistory(Path(directory) / "matches.json")
+            history.add(record("m1", 1, "胜利"))
+            other = MatchRecord(**{**record("m2", 2, "失败").__dict__, "deck_key": "deck-b"})
+            history.add(other)
+            self.assertEqual(history.clear_deck("deck-a"), 1)
+            self.assertEqual(history.stats("deck-a")["total"], 0)
+            self.assertEqual(history.stats("deck-b")["total"], 1)
 
     def test_terminal_id_is_stable(self) -> None:
         first = terminal_match_id("0xabc", 101, 11, 3, -2, 22, 4, 10, 8)

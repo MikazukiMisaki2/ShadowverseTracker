@@ -169,11 +169,11 @@ class OpponentKnownHand:
                 if not isinstance(sequence, int) or sequence in self._event_sequences:
                     continue
                 self._event_sequences.add(sequence)
-                event_name = str(event.get("type") or "").casefold()
-                if "evolve" in event_name or "进化" in event_name:
-                    amount = event.get("count", event.get("amount", 1))
-                    if isinstance(amount, int) and amount > 0:
-                        self.evolution_count += amount
+                # Evolution responses and the field's ``evolve_state`` are
+                # emitted for the same action.  The field path above carries
+                # the card UID and is what builds the recent-record entry, so
+                # it is the authoritative counter.  Adding a generic
+                # BattleResponseEvolve here double-counted every evolution.
                 self._consume_public_draw(event)
 
         played = opponent.get("played_card_ids", ())

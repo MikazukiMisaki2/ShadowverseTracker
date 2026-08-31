@@ -104,6 +104,29 @@ class OpponentKnownHandTests(unittest.TestCase):
         )
         self.assertEqual(tracker.saint_daphen_triggers, [(7, 0)])
 
+    def test_evolution_response_does_not_double_count_evolved_field_cards(self) -> None:
+        tracker = OpponentKnownHand()
+        tracker.update(
+            {
+                "current_turn": 6,
+                "events": [
+                    {"type": "BattleResponseEvolve", "sequence": 10, "is_ally": False},
+                    {"type": "BattleResponseEvolve", "sequence": 11, "is_ally": False},
+                ],
+            },
+            {
+                "turn": 6,
+                "evolve_points": 0,
+                "super_evolve_points": 2,
+                "field": [
+                    {"unique_id": 20, "base_card_id": 10000010, "evolve_state": 1},
+                    {"unique_id": 21, "base_card_id": 10000020, "evolve_state": 1},
+                ],
+            },
+        )
+        self.assertEqual(tracker.evolution_count, 2)
+        self.assertEqual(len(tracker.recent_evolution_events), 2)
+
     def test_direct_all_hand_boost_spell_is_counted_in_addition_to_spell_play(self) -> None:
         tracker = OpponentKnownHand()
         tracker.update(
