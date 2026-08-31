@@ -303,15 +303,53 @@ def _read_battle_event(reader: MemoryReader, address: int) -> dict[str, object]:
             play_kind=reader.read_i32(address + 0x30),
         )
     elif name == "BattleResponseMulligan":
+        # ``change_card_flags`` is a bit mask (one bit for each of the four
+        # opening cards), not a numeric card count.
         event.update(
             draw_num=reader.read_i32(address + 0x18),
             is_ally=bool(reader.read_u32(address + 0x1C) & 0xFF),
-            change_card_flags=reader.read_i32(address + 0x28),
+            change_card_flags=reader.read_u32(address + 0x28),
         )
     elif name == "BattleResponsePlayHide":
         # The object may contain a resolved card internally. Never expose it here.
         event.update(hidden=True, play_kind=reader.read_i32(address + 0x20))
     return event
+
+
+def _read_mulligan_selection_response(
+    reader: MemoryReader,
+    battle_model_address: int,
+    root: BattleRoot | None,
+) -> dict[str, object] | None:
+    """Read the persistent mulligan-selection response.
+
+    The transient response queue is normally empty by the time the first turn
+    begins.  ``BattleModel`` retains the local player's
+    ``MulliganSelectResponse`` at +0x58.  Its ``BattleCardUniqueId[]`` is the
+    list of selected (returned) cards.
+    """
+    property_address = reader.read_u64(battle_model_address + 0x58)
+    response_address = reader.read_u64(property_address + 0x20) if property_address else 0
+    if not response_address or not read_il2cpp_type_name(reader, response_address).endswith("MulliganSelectResponse"):
+        return None
+    unique_ids_address = reader.read_u64(response_address + 0x18)
+    if not unique_ids_address:
+        return None
+    length = reader.read_u64(unique_ids_address + 0x18)
+    if length == 0 or length > MAX_HAND_CARDS:
+        return None
+    unique_ids = tuple(
+        reader.read_u32(unique_ids_address + 0x20 + index * 4)
+        for index in range(length)
+    )
+    return {
+        "address": f"0x{response_address:016X}",
+        "type": "BattleModelMulliganSelection",
+        "is_ally": True,
+        "replaced_count": length,
+        # Keeps a new local selection distinct without exposing IDs.
+        "selection_fingerprint": tuple(unique_ids),
+    }
 
 
 def read_battle_model(
@@ -324,12 +362,30 @@ def read_battle_model(
         raise ValueError("null BattleModel")
     root_property = reader.read_u64(address + 0x30)
     root_address = reader.read_u64(root_property + 0x20) if root_property else 0
+    # ``_currentResponseList`` is cleared as soon as presentation finishes a
+    # response batch.  At the normal 20 Hz tracker poll that makes short-lived
+    # events (mulligan and, importantly, an overdraw) very easy to miss.
+    # ``_battleEvents`` is a ReactiveProperty whose current value keeps the
+    # latest batch alive until the next batch arrives.  Read both collections
+    # and de-duplicate their object addresses.
+    response_addresses: list[int] = []
+    battle_events_property = reader.read_u64(address + 0x28)
+    latest_responses = reader.read_u64(battle_events_property + 0x20) if battle_events_property else 0
     current_responses = reader.read_u64(address + 0x160)
-    response_addresses = read_reference_collection(
-        reader,
-        current_responses,
-        maximum=MAX_HISTORY_ITEMS,
-    )
+    for collection in (latest_responses, current_responses):
+        if not collection:
+            continue
+        try:
+            addresses = read_reference_collection(
+                reader,
+                collection,
+                maximum=MAX_HISTORY_ITEMS,
+            )
+        except (OSError, ValueError):
+            continue
+        for response_address in addresses:
+            if response_address and response_address not in response_addresses:
+                response_addresses.append(response_address)
     self_class_id: int | None = None
     opponent_class_id: int | None = None
     deck_format: int | None = None
@@ -347,17 +403,16 @@ def read_battle_model(
     except (OSError, ValueError):
         # Root state remains useful if ancillary BattleInfo has already been released.
         pass
+    battle_root = read_battle_root(reader, root_address) if root_address else None
+    events = [_read_battle_event(reader, event) for event in response_addresses if event]
+    mulligan_selection = _read_mulligan_selection_response(reader, address, battle_root)
+    if mulligan_selection is not None:
+        events.append(mulligan_selection)
     return {
         "address": f"0x{address:016X}",
         "self_class_id": self_class_id,
         "opponent_class_id": opponent_class_id,
         "deck_format": deck_format,
-        "root": (
-            read_battle_root(reader, root_address).to_public_dict(
-                reveal_opponent_hand=reveal_opponent_hand,
-            )
-            if root_address
-            else None
-        ),
-        "events": [_read_battle_event(reader, event) for event in response_addresses if event],
+        "root": battle_root.to_public_dict(reveal_opponent_hand=reveal_opponent_hand) if battle_root else None,
+        "events": events,
     }

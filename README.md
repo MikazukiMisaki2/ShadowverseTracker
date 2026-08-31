@@ -10,6 +10,7 @@
 - 显示我方手牌、双方公开场面、双方生命、PP、牌库数量与近期使用记录。
 - 使用本地已选牌组维护剩余牌库；抽空的牌会保留为 `0/3`，悬浮牌库会以红色标记。
 - `SV_WB_Cards` 卡图资源存在时，悬浮牌库优先显示卡图；缺图时才显示名称。
+- 内置官方卡库效果数据，包含技能文本、Token 关联 ID 与卡牌类型，可用于明牌规则和训练特征。
 - 本地牌组仓库：可从官方牌组链接、hash 或四位临时牌组码导入，也可在 Tracker 内搜索、增删和调整卡牌。
 - 牌组登记会选择职业与模式；新增卡牌限制为本职业或中立，轮换模式按当前卡包范围过滤。
 - 对局记录：按当前牌组统计总胜率、各职业对局，以及先手/后手胜率。
@@ -83,7 +84,7 @@ py -3.11 run_tracker.py
 
 ## 构建发布包
 
-构建机需要 Python 3.11+、Pillow 与 PyInstaller。脚本会自动安装后两者，并把卡图、卡牌 CSV 和版本配置一起打入产物：
+构建机需要 Python 3.11+、Pillow 与 PyInstaller。脚本会自动安装后两者，并把卡图、卡牌 CSV、效果 JSON 和版本配置一起打入产物：
 
 ```powershell
 cd D:\Github\ShadowverseTracker
@@ -103,6 +104,27 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build_release.ps1 -OneFile
 ```
 
 由于卡图资源接近 200 MB，推荐默认目录版；发布时将整个 `dist\ShadowverseTracker` 压缩为 ZIP 上传到 GitHub Release。
+
+### 更新卡牌效果数据
+
+官方卡库会随新卡包更新。联网时可运行以下命令重新抓取简体中文卡牌效果（输出到
+`src\shadowverse_tracker\data\card_effects_chs.json`）：
+
+```powershell
+python scripts\update_card_effect_data.py
+```
+
+### 对手关键牌概率计算器
+
+Tracker 主界面会自动填入对手牌库、未知手牌和换牌数量；留牌策略及 Key 参数仍由用户填写。也可以单独运行完全手动输入的窗口：
+
+```powershell
+python scripts\opponent_key_probability_app.py
+```
+
+默认策略为 `unknown`：不假设对手实际留下的是 Key，也不把换牌数当作 Key 的证据；只在“未知、来自牌库的手牌 + 剩余牌库”这个总池中，以超几何分布计算至少持有 1 张 Key 的概率。只有已明确掌握对手留牌规则、留牌类型和换牌数时，才适合切换到 `known`。
+
+该脚本只保存卡牌效果、Token 关联和训练所需字段，不会修改游戏文件；更新后重新构建发布包即可。
 
 ## 测试
 

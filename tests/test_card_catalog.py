@@ -16,9 +16,25 @@ from shadowverse_tracker.card_catalog import (
     latest_card_pack,
     load_card_catalog,
 )
+from shadowverse_tracker.card_effects import (
+    get_card_effect,
+    inferred_hand_additions,
+    is_spell,
+    magic_boost_amount,
+    related_token_ids,
+)
 
 
 class CardCatalogTests(unittest.TestCase):
+    def test_card_effect_data_contains_token_relations(self) -> None:
+        effect = get_card_effect(10052110)
+        self.assertIsNotNone(effect)
+        self.assertIn(90051120, related_token_ids(10052110))
+        self.assertIn("蝙蝠", effect.skill_text)
+        self.assertIn((90051120, 1), inferred_hand_additions(10052110, "destroy"))
+        self.assertTrue(is_spell(10031310))
+        self.assertEqual(magic_boost_amount(10532120, "destroy"), 1)
+
     def test_loads_packaged_csv(self) -> None:
         catalog = load_card_catalog()
         # The CSV has 1047 rows; 143 ``base@style`` cosmetic rows are not

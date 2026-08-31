@@ -6,6 +6,7 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $cardImages = Join-Path $projectRoot 'SV_WB_Cards'
 $catalogCsv = Join-Path $projectRoot 'src\shadowverse_tracker\data\SV_WB_Cards.csv'
+$cardEffects = Join-Path $projectRoot 'src\shadowverse_tracker\data\card_effects_chs.json'
 $versionProfiles = Join-Path $projectRoot 'src\shadowverse_tracker\version_profiles'
 
 if (-not (Test-Path -LiteralPath $cardImages)) {
@@ -13,6 +14,9 @@ if (-not (Test-Path -LiteralPath $cardImages)) {
 }
 if (-not (Test-Path -LiteralPath $catalogCsv)) {
     throw "未找到卡牌数据：$catalogCsv"
+}
+if (-not (Test-Path -LiteralPath $cardEffects)) {
+    throw "未找到卡牌效果数据：$cardEffects"
 }
 if (-not (Test-Path -LiteralPath $versionProfiles)) {
     throw "未找到版本配置：$versionProfiles"
@@ -26,6 +30,7 @@ $arguments = @(
     '--name', 'ShadowverseTracker',
     '--add-data', "$cardImages;SV_WB_Cards",
     '--add-data', "$catalogCsv;shadowverse_tracker\\data",
+    '--add-data', "$cardEffects;shadowverse_tracker\\data",
     '--add-data', "$versionProfiles;shadowverse_tracker\\version_profiles",
     '--hidden-import', 'shadowverse_tracker.version_profiles',
     '--exclude-module', 'numpy',

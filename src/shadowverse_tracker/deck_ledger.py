@@ -31,6 +31,21 @@ class DeckLedger:
         self._seen_draw_events: set[tuple[int, int]] = set()
         self._last_deck_count: int | None = None
         self._unknown_removed = 0
+        self._burned_cards = 0
+        self._burned_card_ids: list[int] = []
+
+    def record_burn(self, count: int = 1, card_ids: tuple[int, ...] = ()) -> None:
+        """Record draws lost because the local hand was already full.
+
+        Identified cards have already been consumed by ``_draw_cards`` during
+        ``update``; the IDs here are retained for display and training output.
+        """
+        if count > 0:
+            self._burned_cards += count
+            for runtime_card_id in card_ids[:count]:
+                card_id = self._deck_card_id(runtime_card_id)
+                if card_id is not None:
+                    self._burned_card_ids.append(card_id)
 
     @property
     def identified_removed(self) -> int:
@@ -165,5 +180,7 @@ class DeckLedger:
             "authoritative_deck_count": deck_count if deck_count is not None else self._last_deck_count,
             "identified_removed": self.identified_removed,
             "unknown_removed": self._unknown_removed,
+            "burned_cards": self._burned_cards,
+            "burned_card_ids": list(self._burned_card_ids),
             "rows": [row.__dict__ for row in rows],
         }

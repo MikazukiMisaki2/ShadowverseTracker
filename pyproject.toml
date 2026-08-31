@@ -17,4 +17,4 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "shadowverse_tracker.version_profiles" = ["*.json"]
-"shadowverse_tracker.data" = ["*.csv"]
+"shadowverse_tracker.data" = ["*.csv", "*.json"]

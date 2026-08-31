@@ -29,7 +29,8 @@ from .deck_repository import DeckRepository, SavedDeck
 from .memory.deck import DeckCard
 from .official_deck import OfficialDeck, OfficialDeckError, import_deck_code, parse_official_deck
 from .match_history import CLASS_NAMES, MatchHistory, MatchRecord, class_name, result_label, terminal_match_id
-from .opponent_hand import OpponentKnownHand
+from .opponent_hand import UNKNOWN_CARD_TYPE_LABELS, OpponentKnownHand
+from .opponent_key_probability import calculate_key_probability
 from .tracker_service import TrackerConfig, TrackerService
 
 
@@ -71,8 +72,8 @@ class TrackerApp(tk.Tk):
         self._card_image_roots = self._find_card_image_roots()
         self._build_ui(args)
         self.after(100, self._drain_events)
-        # Start in automatic-discovery mode; the service patiently waits for
-        # ShadowverseWB and future battles instead of requiring a manual click.
+        # Reading runs automatically; the manual address/button remain
+        # available only through the settings/debug build, not the main UI.
         self.after(300, self._connect)
         self.protocol("WM_DELETE_WINDOW", self._close)
 
@@ -113,9 +114,8 @@ class TrackerApp(tk.Tk):
         ttk.Button(decks, text="删除牌组", command=self._delete_deck).grid(
             row=0, column=2, padx=(6, 0)
         )
-        # Local match statistics are enabled by default; users can turn them
-        # off at any time with the checkbox.
-        self.record_matches_var = tk.BooleanVar(value=True)
+        # Match recording is opt-in and is started manually by the checkbox.
+        self.record_matches_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             decks,
             text="启用对局记录（本地）",
@@ -175,14 +175,21 @@ class TrackerApp(tk.Tk):
 
         connection = ttk.LabelFrame(root, text="只读连接", padding=8)
         connection.pack(fill="x", pady=(10, 0))
-        ttk.Label(connection, text="BattleModel 地址").grid(row=0, column=0, sticky="w")
+        self.model_label = ttk.Label(connection, text="BattleModel 地址")
+        self.model_label.grid(row=0, column=0, sticky="w")
         self.model_var = tk.StringVar(value=f"0x{args.model:X}" if args.model else "")
-        ttk.Entry(connection, textvariable=self.model_var, width=22).grid(row=0, column=1, padx=6)
-        ttk.Label(connection, text="（留空自动发现）").grid(row=0, column=2, sticky="w")
+        self.model_entry = ttk.Entry(connection, textvariable=self.model_var, width=22)
+        self.model_entry.grid(row=0, column=1, padx=6)
+        self.model_hint = ttk.Label(connection, text="（留空自动发现）")
+        self.model_hint.grid(row=0, column=2, sticky="w")
         self.connect_button = ttk.Button(connection, text="开始读取", command=self._connect)
         self.connect_button.grid(row=0, column=3, padx=(12, 0))
         self.status_var = tk.StringVar(value="未连接")
         ttk.Label(connection, textvariable=self.status_var).grid(row=1, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        self.model_label.grid_remove()
+        self.model_entry.grid_remove()
+        self.model_hint.grid_remove()
+        self.connect_button.grid_remove()
         ttk.Label(connection, text="抽牌概率").grid(row=2, column=0, sticky="w", pady=(8, 0))
         self.probability_card_var = tk.StringVar()
         self.probability_card_choice = ttk.Combobox(
@@ -196,12 +203,70 @@ class TrackerApp(tk.Tk):
         ttk.Button(connection, text="计算", command=self._calculate_draw_probability).grid(row=2, column=4, padx=(6, 0), pady=(8, 0))
         ttk.Label(connection, textvariable=self.probability_result_var).grid(row=3, column=0, columnspan=5, sticky="w", pady=(6, 0))
         self._probability_cards: dict[str, tuple[int, int, int]] = {}
+        self.opponent_counter_var = tk.StringVar(value="通用计数器：等待对局数据")
+        self.class_counter_var = tk.StringVar(value="职业计数器：等待对局数据")
+        counter_frame = ttk.LabelFrame(connection, text="通用计数器")
+        counter_frame.grid(row=0, column=5, rowspan=4, padx=(18, 0), sticky="nsew")
+        ttk.Label(counter_frame, textvariable=self.opponent_counter_var, justify="left", anchor="nw").pack(
+            fill="both", expand=True, padx=8, pady=6
+        )
+        class_frame = ttk.LabelFrame(connection, text="对手职业计数器")
+        class_frame.grid(row=0, column=6, rowspan=4, padx=(8, 0), sticky="nsew")
+        ttk.Label(class_frame, textvariable=self.class_counter_var, justify="left", anchor="nw").pack(
+            fill="both", expand=True, padx=8, pady=6
+        )
+        connection.columnconfigure(5, weight=1)
+        connection.columnconfigure(6, weight=1)
+
+        # Opponent key-card probability.  Deck/hand/swap values are filled
+        # from Tracker snapshots; only mulligan policy and the queried key
+        # assumptions need to be supplied by the user.
+        key_frame = ttk.LabelFrame(root, text="对手关键牌概率（固定首回合抽1张，起手换4张模型）", padding=6)
+        key_frame.pack(fill="x", pady=(8, 0))
+        self.key_strategy_var = tk.StringVar(value="unknown")
+        ttk.Label(key_frame, text="策略").grid(row=0, column=0, sticky="w")
+        strategy_choice = ttk.Combobox(key_frame, textvariable=self.key_strategy_var, values=("known", "unknown"), state="readonly", width=9)
+        strategy_choice.grid(row=0, column=1, padx=4)
+        self.key_keep1_var = tk.StringVar(value="0")
+        self.key_keep2_var = tk.StringVar(value="0")
+        self.key_seen1_var = tk.StringVar(value="0")
+        self.key_seen2_var = tk.StringVar(value="0")
+        self.key_copies_var = tk.StringVar(value="3")
+        self.key_limit_var = tk.StringVar(value="1")
+        self.key_seen_var = tk.StringVar(value="0")
+        self._key_policy_entries: list[ttk.Entry] = []
+        for column, label, variable in (
+            (2, "留1类型", self.key_keep1_var), (4, "留2类型", self.key_keep2_var),
+            (6, "已见留1", self.key_seen1_var), (8, "已见留2", self.key_seen2_var),
+        ):
+            ttk.Label(key_frame, text=label).grid(row=0, column=column, padx=(8, 2), sticky="e")
+            entry = ttk.Entry(key_frame, textvariable=variable, width=5)
+            entry.grid(row=0, column=column + 1, padx=2)
+            self._key_policy_entries.append(entry)
+        self.key_deck_remaining_var = tk.StringVar(value="—")
+        self.key_hand_size_var = tk.StringVar(value="—")
+        self.key_mulligan_var = tk.StringVar(value="—")
+        for column, label, variable in ((10, "牌库剩余", self.key_deck_remaining_var), (12, "未知手牌", self.key_hand_size_var), (14, "对手换牌数", self.key_mulligan_var)):
+            ttk.Label(key_frame, text=label).grid(row=0, column=column, padx=(8, 2), sticky="e")
+            ttk.Label(key_frame, textvariable=variable, width=5, relief="sunken", anchor="center").grid(row=0, column=column + 1, padx=2)
+        for column, label, variable in ((0, "Key投入", self.key_copies_var), (3, "Key留牌上限", self.key_limit_var), (6, "Key已见", self.key_seen_var)):
+            ttk.Label(key_frame, text=label).grid(row=1, column=column, padx=(8, 2), pady=(5, 0), sticky="e")
+            entry = ttk.Entry(key_frame, textvariable=variable, width=5)
+            entry.grid(row=1, column=column + 1, padx=2, pady=(5, 0))
+            if variable is self.key_limit_var:
+                self._key_policy_entries.append(entry)
+        self.key_probability_result_var = tk.StringVar(value="等待对手对局数据")
+        ttk.Button(key_frame, text="计算对手Key概率", command=self._calculate_opponent_key_probability).grid(row=1, column=8, columnspan=3, padx=6, pady=(5, 0), sticky="w")
+        ttk.Button(key_frame, text="计算对手下回合Key概率", command=self._calculate_opponent_next_turn_key_probability).grid(row=1, column=11, columnspan=4, padx=6, pady=(5, 0), sticky="w")
+        ttk.Label(key_frame, textvariable=self.key_probability_result_var).grid(row=2, column=0, columnspan=17, sticky="w", pady=(5, 0))
+        strategy_choice.bind("<<ComboboxSelected>>", self._sync_key_strategy_inputs)
+        self._sync_key_strategy_inputs()
 
         details = ttk.PanedWindow(root, orient="horizontal")
         details.pack(fill="both", expand=True, pady=(10, 0))
         self.hand_text = self._overview_panel(details)
         self.deck_text = self._text_panel(details, "剩余牌库")
-        self.field_text = self._text_panel(details, "双方场面")
+        self.field_text = self._text_panel(details, "目前对局")
         self.history_text = self._text_panel(details, "最近记录")
         self.deck_text.tag_configure("deck_header", font=("Segoe UI", 14, "bold"))
         self.deck_text.tag_configure("deck_section", font=("Segoe UI", 10, "bold"), foreground="#24527a")
@@ -493,6 +558,10 @@ class TrackerApp(tk.Tk):
         self._service = TrackerService(
             TrackerConfig(
                 model_address=model,
+                # Opening mulligan responses can be replaced in quick
+                # succession. Poll at 20 Hz so the opponent response is seen
+                # before the local response overwrites it.
+                interval=0.05,
                 output_path=Path("logs") / "app_session.jsonl",
                 selected_deck=self._active_deck_snapshot(),
                 selected_deck_key=self._active_saved_deck().key if self._active_saved_deck() else None,
@@ -555,6 +624,106 @@ class TrackerApp(tk.Tk):
             f"未来 {actual_draws} 抽至少抽到 1 张：{chance:.1f}%（该牌剩余 {remaining}/{total}）"
         )
 
+    def _calculate_opponent_key_probability(self) -> None:
+        self._calculate_opponent_key_probability_for_state(after_next_draw=False)
+
+    def _calculate_opponent_next_turn_key_probability(self) -> None:
+        """Project the opponent's hidden hand through their next turn-start draw."""
+        self._calculate_opponent_key_probability_for_state(after_next_draw=True)
+
+    @staticmethod
+    def _project_opponent_next_draw(deck_remaining: int, hand_size: int) -> tuple[int, int] | None:
+        if deck_remaining <= 0:
+            return None
+        return deck_remaining - 1, hand_size + 1
+
+    def _calculate_opponent_key_probability_for_state(self, *, after_next_draw: bool) -> None:
+        snapshot = self._last_snapshot or {}
+        root = snapshot.get("root") if isinstance(snapshot, dict) else None
+        players = root.get("players", ()) if isinstance(root, dict) else ()
+        if not isinstance(players, (list, tuple)) or len(players) < 2 or not isinstance(players[1], dict):
+            self.key_probability_result_var.set("尚未读取到对手牌库/手牌数据")
+            return
+        opponent = players[1]
+        def integer(variable: tk.StringVar, label: str) -> int | None:
+            try:
+                value = int(variable.get().strip())
+            except ValueError:
+                self.key_probability_result_var.set(f"{label}请输入整数")
+                return None
+            return value
+        values = [(self.key_keep1_var, "留1类型"), (self.key_keep2_var, "留2类型"), (self.key_seen1_var, "已见留1"),
+                  (self.key_seen2_var, "已见留2"), (self.key_copies_var, "Key投入"), (self.key_limit_var, "Key留牌上限"), (self.key_seen_var, "Key已见")]
+        parsed = [integer(variable, label) for variable, label in values]
+        if any(value is None for value in parsed):
+            return
+        keep1, keep2, seen1, seen2, copies, limit, key_seen = [int(value) for value in parsed]
+        hand = opponent.get("hand", ())
+        hand_size = len(hand) if isinstance(hand, (list, tuple)) else 0
+        knowledge = snapshot.get("opponent_hand_knowledge")
+        if isinstance(knowledge, dict):
+            generated = sum(int(item.get("count", 0)) for item in knowledge.get("known_cards", ()) if isinstance(item, dict))
+            generated += sum(int(item.get("count", 0)) for item in knowledge.get("known_types", ()) if isinstance(item, dict))
+            hand_size = max(0, hand_size - generated)
+        mulligan = snapshot.get("training_observation", {})
+        mulligan_data = mulligan.get("mulligan", {}) if isinstance(mulligan, dict) else {}
+        swapped = self._resolved_opponent_mulligan(mulligan_data, default=None)
+        strategy = self.key_strategy_var.get() if self.key_strategy_var.get() in ("known", "unknown") else "known"
+        if swapped is None and strategy == "known":
+            self.key_probability_result_var.set("无法计算：尚未读取到对手换牌数量")
+            return
+        calculation_swapped = swapped if isinstance(swapped, int) else 0
+        deck_remaining = opponent.get("deck_count", 36)
+        if not isinstance(deck_remaining, int):
+            deck_remaining = 36
+        deck_remaining = min(36, max(0, deck_remaining))
+        if after_next_draw:
+            projected = self._project_opponent_next_draw(deck_remaining, hand_size)
+            if projected is None:
+                self.key_probability_result_var.set("无法计算：对手牌库为空，无法进行下一回合抽牌")
+                return
+            deck_remaining, hand_size = projected
+        result = calculate_key_probability(
+            deck_remaining=deck_remaining, hand_size=hand_size, mulligan_swapped=calculation_swapped,
+            keep1_types=keep1, keep2_types=keep2, seen_keep1=seen1, seen_keep2=seen2,
+            key_copies=copies, key_keep_limit=limit, key_seen=key_seen,
+            strategy=strategy,
+        )
+        if result.valid and result.percent is not None:
+            mulligan_label = swapped if isinstance(swapped, int) else "未知"
+            label = "对手下回合 Key 概率" if after_next_draw else "Key概率"
+            self.key_probability_result_var.set(f"{label}：{result.percent:.2f}%（牌库{deck_remaining}，未知手牌{hand_size}，换牌{mulligan_label}）")
+        else:
+            self.key_probability_result_var.set(f"无法计算：{result.reason}")
+
+    def _sync_key_strategy_inputs(self, _event: object = None) -> None:
+        """Known-policy fields are irrelevant, and therefore read-only, in unknown mode."""
+        state = "disabled" if self.key_strategy_var.get() == "unknown" else "normal"
+        for entry in self._key_policy_entries:
+            entry.configure(state=state)
+
+    def _resolved_opponent_mulligan(self, mulligan: object, *, default: int | None) -> int | None:
+        value = mulligan.get("opponent_replaced_count", default) if isinstance(mulligan, dict) else default
+        return value if isinstance(value, int) and 0 <= value <= 4 else default
+
+    def _update_opponent_probability_inputs(self, snapshot: dict[str, object], opponent: dict[str, object]) -> None:
+        deck_remaining = opponent.get("deck_count")
+        if not isinstance(deck_remaining, int):
+            deck_remaining = 36
+        self.key_deck_remaining_var.set(str(max(0, deck_remaining)))
+        hand = opponent.get("hand", ())
+        hand_size = len(hand) if isinstance(hand, (list, tuple)) else 0
+        knowledge = snapshot.get("opponent_hand_knowledge")
+        if isinstance(knowledge, dict):
+            generated = sum(int(item.get("count", 0)) for item in knowledge.get("known_cards", ()) if isinstance(item, dict))
+            generated += sum(int(item.get("count", 0)) for item in knowledge.get("known_types", ()) if isinstance(item, dict))
+            hand_size = max(0, hand_size - generated)
+        self.key_hand_size_var.set(str(hand_size))
+        training = snapshot.get("training_observation")
+        mulligan = training.get("mulligan", {}) if isinstance(training, dict) else {}
+        swapped = self._resolved_opponent_mulligan(mulligan, default=None)
+        self.key_mulligan_var.set(str(swapped) if isinstance(swapped, int) else "—")
+
     def _toggle_match_recording(self) -> None:
         if self.record_matches_var.get():
             self.status_var.set("已开启对局记录（仅保存到本机）")
@@ -611,14 +780,17 @@ class TrackerApp(tk.Tk):
         mine, opponent = players[0], players[1]
         if not isinstance(mine, dict) or not isinstance(opponent, dict):
             return
+        self._update_opponent_probability_inputs(snapshot, opponent)
         self._track_match(snapshot, mine, opponent)
+        if self._has_terminal_result(mine, opponent):
+            self._clear_completed_match_display()
+            return
         self._opponent_known_hand.update(snapshot, opponent)
         self.summary_var.set(
             f"回合 {mine.get('turn', '?')}    "
             f"我方生命 {mine.get('life', '?')} / 对手 {opponent.get('life', '?')}    "
             f"我方牌库 {mine.get('deck_count', '?')}    "
-            f"PP {mine.get('pp', '?')}/{mine.get('max_pp', '?')}    "
-            f"结果码 {mine.get('result_code', 0)}"
+            f"PP {mine.get('pp', '?')}/{mine.get('max_pp', '?')}"
         )
         hand = mine.get("hand", [])
         hand_lines = [
@@ -643,6 +815,12 @@ class TrackerApp(tk.Tk):
             unknown = ledger.get("unknown_removed", 0)
             if isinstance(unknown, int) and unknown:
                 deck_segments.append((f"未识别离开牌库：{unknown} 张\n", "deck_section"))
+            burned = ledger.get("burned_cards", 0)
+            if isinstance(burned, int) and burned:
+                burned_ids = ledger.get("burned_card_ids", ())
+                names = [self._card_label(card_id) for card_id in burned_ids if isinstance(card_id, int)] if isinstance(burned_ids, (list, tuple)) else []
+                detail = "、".join(names) if names else f"{burned} 张"
+                deck_segments.append((f"爆牌：{detail}\n", "deck_section"))
             rows = ledger.get("rows", ())
             if isinstance(rows, (list, tuple)):
                 valid_rows = [row for row in rows if isinstance(row, dict)]
@@ -660,14 +838,51 @@ class TrackerApp(tk.Tk):
             self._set_rich_text(self.deck_text, deck_segments)
         else:
             self._set_text(self.deck_text, "请从本地牌组仓库选择牌组")
-        lines = ["我方："]
-        lines.extend(self._format_field(mine.get("field", [])))
-        lines.append("\n对手（仅公开信息）：")
-        lines.extend(self._format_field(opponent.get("field", [])))
-        lines.append("\n对手手牌（人机本地）：")
+        # Keep hand knowledge and other extra information in the upper part;
+        # the current board is separated below for quick scanning.
+        lines = ["对手手牌："]
         lines.extend(self._format_opponent_hand(opponent))
+        if snapshot.get("opponent_class_id") == 3:
+            lines.append(f"\n对手魔力增幅：{self._opponent_known_hand.magic_boost}")
+        lines.append("\n────────────────")
+        lines.append("我方场面：")
+        lines.extend(self._format_field(mine.get("field", [])))
+        lines.append("\n对手场面：")
+        lines.extend(self._format_field(opponent.get("field", [])))
+        self.opponent_counter_var.set(self._format_general_counters(snapshot))
+        self.class_counter_var.set(self._format_class_counters(snapshot))
         self._set_text(self.field_text, "\n".join(lines))
         self._set_text(self.history_text, self._format_recent_history(mine, opponent))
+
+    @staticmethod
+    def _has_terminal_result(mine: dict[str, object], opponent: dict[str, object]) -> bool:
+        """Return true only for a confirmed local victory or defeat."""
+        result_code = mine.get("result_code")
+        if not isinstance(result_code, int):
+            return False
+        return result_label(
+            result_code,
+            mine.get("life") if isinstance(mine.get("life"), int) else None,
+            opponent.get("life") if isinstance(opponent.get("life"), int) else None,
+        ) in {"胜利", "失败"}
+
+    def _clear_completed_match_display(self) -> None:
+        """Immediately remove finished-match data while keeping saved results."""
+        self._last_snapshot = None
+        self._opponent_known_hand.reset()
+        self.status_var.set("本局已结束，等待下一局")
+        self.summary_var.set("本局已结束，等待下一局数据")
+        self.opponent_counter_var.set("通用计数器：等待下一局")
+        self.class_counter_var.set("对手职业计数器：等待下一局")
+        self.key_deck_remaining_var.set("—")
+        self.key_hand_size_var.set("—")
+        self.key_mulligan_var.set("—")
+        self.key_probability_result_var.set("等待下一局对手数据")
+        self._set_text(self.hand_text, "等待下一局")
+        self._set_text(self.deck_text, "等待下一局")
+        self._set_text(self.field_text, "等待下一局")
+        self._set_text(self.history_text, "等待下一局")
+        self._render_overlay(None)
 
     def _track_match(
         self,
@@ -1169,29 +1384,110 @@ class TrackerApp(tk.Tk):
 
     @staticmethod
     def _format_recent_history(mine: dict[str, object], opponent: dict[str, object]) -> str:
-        def format_cards(value: object) -> list[str]:
+        def format_cards(value: object, turns: object = None) -> list[str]:
             if not isinstance(value, (list, tuple)):
                 return []
             lines: list[str] = []
-            for item in value[-10:]:
+            turn_values = list(turns) if isinstance(turns, (list, tuple)) else []
+            start = max(0, len(value) - 10)
+            for index, item in enumerate(value[start:], start=start):
+                prefix = f"T{turn_values[index]}：" if index < len(turn_values) and isinstance(turn_values[index], int) and turn_values[index] > 0 else ""
                 if isinstance(item, (list, tuple)) and item:
-                    lines.append(TrackerApp._card_label(item[0]))
+                    lines.append(prefix + TrackerApp._card_label(item[0]))
                 elif isinstance(item, int):
-                    lines.append(TrackerApp._card_label(item))
+                    lines.append(prefix + TrackerApp._card_label(item))
                 else:
-                    lines.append(str(item))
+                    lines.append(prefix + str(item))
             return lines
 
-        mine_lines = format_cards(mine.get("played_card_ids", ()))
-        opponent_lines = format_cards(opponent.get("played_card_ids", ()))
+        turns = mine.get("_played_card_turns")
+        opponent_turns = opponent.get("_played_card_turns")
+        mine_lines = format_cards(mine.get("played_card_ids", ()), turns)
+        opponent_lines = format_cards(opponent.get("played_card_ids", ()), opponent_turns)
+
+        def action_lines(actions: object) -> list[str]:
+            values: list[tuple[int, int, str]] = []
+            if isinstance(actions, (list, tuple)):
+                for item in actions:
+                    if not isinstance(item, dict):
+                        continue
+                    turn, order, card_id, kind = item.get("turn"), item.get("order"), item.get("card_id"), item.get("kind")
+                    if isinstance(turn, int) and isinstance(order, int) and isinstance(card_id, int) and isinstance(kind, str):
+                        values.append((turn, order, f"T{turn}：{kind} {TrackerApp._card_label(card_id)}"))
+            return [line for _turn, _order, line in sorted(values)[-20:]]
+
+        own_actions = action_lines(mine.get("_recent_actions"))
+        if own_actions:
+            mine_lines = own_actions
+
+        def append_event_plays(lines: list[str], player: dict[str, object]) -> None:
+            events = player.get("_event_played_cards")
+            if not isinstance(events, (list, tuple)):
+                return
+            # The persistent history can arrive after the public response.
+            # Avoid showing that same play twice while retaining repeated cards.
+            existing = list(lines)
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+                card_id, turn = event.get("card_id"), event.get("turn")
+                if not isinstance(card_id, int):
+                    continue
+                prefix = f"T{turn}：" if isinstance(turn, int) and turn > 0 else ""
+                line = prefix + TrackerApp._card_label(card_id)
+                if line in existing:
+                    existing.remove(line)
+                else:
+                    lines.append(line)
+
+        append_event_plays(mine_lines, mine)
+        append_event_plays(opponent_lines, opponent)
+        knowledge = opponent.get("opponent_hand_knowledge")
+        actions = knowledge.get("recent_actions", ()) if isinstance(knowledge, dict) else ()
+        ordered_actions = action_lines(actions)
+        if ordered_actions:
+            opponent_lines = ordered_actions
+        mine_mulligan = mine.get("mulligan_summary")
+        if isinstance(mine_mulligan, dict) and mine_mulligan.get("initial_hand"):
+            mine_lines.insert(0, "起手：" + "、".join(TrackerApp._card_label(v) for v in mine_mulligan.get("initial_hand", ())))
+            replaced = mine_mulligan.get("replaced_cards", ())
+            final_hand = mine_mulligan.get("final_hand", ())
+            if replaced:
+                mine_lines.insert(1, "换出：" + "、".join(TrackerApp._card_label(v) for v in replaced))
+            if final_hand:
+                mine_lines.insert(2, "换后：" + "、".join(TrackerApp._card_label(v) for v in final_hand))
+        draw_history = mine.get("_draw_history")
+        if isinstance(draw_history, (list, tuple)):
+            for item in draw_history[-20:]:
+                if not isinstance(item, dict) or not isinstance(item.get("turn"), int):
+                    continue
+                if item.get("kind") == "爆牌":
+                    if isinstance(item.get("card_id"), int):
+                        mine_lines.append(f"T{item['turn']}：爆牌 {TrackerApp._card_label(item['card_id'])}")
+                    else:
+                        mine_lines.append(f"T{item['turn']}：爆牌 {item.get('count', 1)} 张")
+                elif isinstance(item.get("card_id"), int):
+                    mine_lines.append(f"T{item['turn']}：抽取 {TrackerApp._card_label(item['card_id'])}")
+        opponent_mulligan = opponent.get("mulligan_summary")
+        if isinstance(opponent_mulligan, dict) and isinstance(opponent_mulligan.get("replaced_count"), int):
+            opponent_lines.insert(0, f"起手换牌：{opponent_mulligan['replaced_count']} 张")
         if not mine_lines:
             mine_lines = ["（暂无）"]
         if not opponent_lines:
-            opponent_lines = ["（暂无公开记录）"]
+            opponent_lines = ["（暂无记录）"]
+        evolution_events = knowledge.get("recent_evolution_events", ()) if isinstance(knowledge, dict) else ()
+        if not actions and isinstance(evolution_events, (list, tuple)):
+            for item in evolution_events[-10:]:
+                if isinstance(item, dict):
+                    turn = item.get("turn")
+                    card_id = item.get("card_id")
+                    kind = item.get("kind", "进化")
+                    if isinstance(turn, int) and isinstance(card_id, int):
+                        opponent_lines.append(f"T{turn}：对手{kind} {TrackerApp._card_label(card_id)}")
         return (
-            "我方使用：\n"
+            "我方记录：\n"
             + "\n".join(mine_lines)
-            + "\n\n对方使用（公开）：\n"
+            + "\n\n对手记录：\n"
             + "\n".join(opponent_lines)
         )
 
@@ -1208,24 +1504,83 @@ class TrackerApp(tk.Tk):
                     if isinstance(item[0], int) and get_card_metadata(int(item[0])) is not None
                     else 999
                 ),
-                "未知法术" if item[0] == "unknown_spell" else get_card_name(int(item[0])),
+                UNKNOWN_CARD_TYPE_LABELS.get(str(item[0]), str(item[0]))
+                if isinstance(item[0], str)
+                else get_card_name(int(item[0])),
             )
         )
         lines: list[str] = []
         for value, count in values:
             if not isinstance(count, int) or count <= 0:
                 continue
-            name = "未知法术" if value == "unknown_spell" else get_card_name(int(value))
+            name = (
+                UNKNOWN_CARD_TYPE_LABELS.get(value, value)
+                if isinstance(value, str)
+                else get_card_name(int(value))
+            )
             lines.append(f"{name}：{count}")
         return lines or ["（暂无已知明牌）"]
 
     def _format_opponent_hand(self, opponent: dict[str, object]) -> list[str]:
         hand = opponent.get("hand")
         if isinstance(hand, (list, tuple)):
-            visible = [card for card in hand if isinstance(card, dict) and not card.get("hidden")]
+            # The normal battle snapshot contains placeholder
+            # BattleHandCardMpo objects for an opponent's hidden cards.  Those
+            # objects have a real address but every card field is zero.  Do not
+            # render them as the misleading "0费 0"; only a resolved card ID
+            # is useful to a player.
+            visible = [
+                card
+                for card in hand
+                if isinstance(card, dict)
+                and not card.get("hidden")
+                and isinstance(card.get("base_card_id") or card.get("card_id"), int)
+                and int(card.get("base_card_id") or card.get("card_id") or 0) > 0
+            ]
             if visible:
                 return [self._format_card_line(card) for card in visible]
         return self._format_known_opponent_hand()
+
+    def _format_general_counters(self, snapshot: dict[str, object]) -> str:
+        class_id = snapshot.get("opponent_class_id")
+        if not isinstance(class_id, int):
+            return "对手职业未知\n暂无专属计数器"
+        knowledge = snapshot.get("opponent_hand_knowledge")
+        if not isinstance(knowledge, dict):
+            return f"对手职业：{class_name(class_id)}\n等待计数数据…"
+        lines = []
+        lines.append(f"进化次数：{knowledge.get('evolution_count', 0)}")
+        lines.append(f"解放奥义计数：{knowledge.get('liberation_count', 0)}")
+        triggers = knowledge.get("saint_daphen_triggers", ())
+        if not isinstance(triggers, (list, tuple)) or not triggers:
+            lines.append("圣德芬解放奥义：尚未瞬招")
+        else:
+            lines.append("圣德芬解放奥义：")
+            evolution = int(knowledge.get("evolution_count", 0) or 0)
+            turn_now = int(knowledge.get("current_turn", 0) or 0)
+            for index, item in enumerate(triggers, 1):
+                base = int(item.get("base_evolution", 0)) if isinstance(item, dict) else 0
+                lines.append(f"圣德芬{index}：{max(0, evolution - base) + turn_now}")
+        return "\n".join(lines)
+
+    def _format_class_counters(self, snapshot: dict[str, object]) -> str:
+        class_id = snapshot.get("opponent_class_id")
+        knowledge = snapshot.get("opponent_hand_knowledge")
+        if not isinstance(class_id, int):
+            return "对手职业未知"
+        if not isinstance(knowledge, dict):
+            return f"对手职业：{class_name(class_id)}\n等待计数数据…"
+        suffix = "（魔力增幅）" if class_id == 3 else ""
+        lines = [f"对手职业：{class_name(class_id)}{suffix}"]
+        if class_id == 3:
+            turns = knowledge.get("turn_magic_boost", {})
+            if isinstance(turns, dict):
+                for key, value in sorted(turns.items(), key=lambda item: int(item[0]) if str(item[0]).isdigit() else 999):
+                    lines.append(f"T{key}：{value}")
+            lines.append(f"Total：{knowledge.get('magic_boost', 0)}")
+        else:
+            lines.append("暂无该职业专属计数器")
+        return "\n".join(lines)
 
     @staticmethod
     def _card_label(value: object) -> str:
