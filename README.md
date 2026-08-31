@@ -1,118 +1,118 @@
 # Shadowverse Tracker
 
-《Shadowverse: Worlds Beyond》只读记牌器研究项目。
+《Shadowverse: Worlds Beyond》的 Windows 外置只读记牌器。它通过读取本机游戏进程的公开对局状态来维护牌库与对局记录；不修改游戏文件、不注入 DLL，也不会暂停游戏。
 
-当前目标：
+> 当前读取配置对应游戏版本 `1.9.0.17891`。游戏更新后，程序会在版本校验失败时停止读取，避免套用旧偏移产生错误数据。
 
-- 维护自己的牌库、手牌与公开区域状态。
-- 使用只读状态后端，提高抽牌和爆牌记录准确性，不依赖 OCR。
-- 对对手信息只呈现规则上已经公开或可以推断的内容。
-- 按游戏版本隔离偏移配置，并在版本不匹配时停止内存后端。
+## 当前功能
 
-## 桌面应用原型
+- 启动 Tracker 后自动等待游戏、自动连接对局；一局结束后会继续等待下一局。
+- 显示我方手牌、双方公开场面、双方生命、PP、牌库数量与近期使用记录。
+- 使用本地已选牌组维护剩余牌库；抽空的牌会保留为 `0/3`，悬浮牌库会以红色标记。
+- `SV_WB_Cards` 卡图资源存在时，悬浮牌库优先显示卡图；缺图时才显示名称。
+- 本地牌组仓库：可从官方牌组链接、hash 或四位临时牌组码导入，也可在 Tracker 内搜索、增删和调整卡牌。
+- 牌组登记会选择职业与模式；新增卡牌限制为本职业或中立，轮换模式按当前卡包范围过滤。
+- 对局记录：按当前牌组统计总胜率、各职业对局，以及先手/后手胜率。
+- 抽牌概率：选择尚未抽空的牌并输入未来抽牌次数，计算至少抽到一张的概率。
+- 人机本地对局中会显示客户端保存的对手手牌；在线对局只显示公开或可推断的信息。
 
-现在可以启动一个不依赖 x64dbg 的只读桌面窗口。地址输入框保持空白即可：
+## 直接运行发布版（推荐）
 
-```powershell
-py run_tracker.py
+从 GitHub Release 下载 `ShadowverseTracker.zip` 后，**完整解压**再运行：
+
+```text
+ShadowverseTracker/
+├─ ShadowverseTracker.exe
+├─ _internal/
+└─ SV_WB_Cards/
 ```
 
-Tracker 会先校验当前 `GameAssembly.dll` 是否属于支持版本，再自动寻找
-`BattleModel`，游戏不会因为读取动作暂停。窗口会把快照追加保存到
-`logs/app_session.jsonl`。
+双击 `ShadowverseTracker.exe` 即可。不要只把 EXE 单独移走：`_internal` 与 `SV_WB_Cards` 都是运行所需文件，后者包含卡图与卡牌资源。
 
-### 本地牌组仓库与剩余牌库
+运行发布版不需要安装 Python、Pillow、PyInstaller 或二维码识别组件。请在同一台 Windows 电脑上启动游戏和 Tracker；如果进程读取被系统拒绝，请让两者以相同权限运行。
 
-把 `shadowverse-wb.com` 官方牌组详情链接粘贴到窗口顶部，先选择登记职业和模式（轮换/无限），
-再点击“导入并保存”。Tracker 会解析链接中的 40 张 CardId，校验单卡三张上限，并保存到本地牌组仓库。
-使用不同牌组时，在“当前牌组”下拉框中手动切换；上次选择会在下次启动时自动恢复。
+## 从源码运行
 
-进入对局后，“剩余牌库”面板显示每种卡牌的“剩余张数/初始张数”。中途才开始读取时，
-无法确认的早期牌库变化会显示为“未识别离开牌库”，不会猜成某张卡。
+### 必需环境
 
-应用内置 `SV_WB_Cards.csv` 卡牌字典。手牌、公开场面、出牌历史和剩余牌库都会显示
-“费用 + 中文名称”，不再显示过长的 CardId；运行时异画/样式 ID 会自动回退到基础卡 ID 查询名称。
-左侧“对局概览”会在上方显示双方生命、我方牌库和 PP，下方显示我方手牌；“最近记录”分为我方使用和
-对方使用（仅公开信息）两段。
-“双方场面”中的“对手手牌（人机本地）”在本地人机模式下直接显示客户端保存的对手手牌，
-因此不需要为每一张生成 Token 单独维护规则；如果某个版本没有保留完整手牌，才回退到已知明牌规则，
-例如蝙蝠、碎裂的盗匪 Token 和“未知法术”。
+- Windows 10/11
+- Python 3.11 或更新版本
+- 已安装并能启动的《Shadowverse: Worlds Beyond》
+- 项目根目录中的 `SV_WB_Cards/` 资源目录（仓库内已包含，用于卡图）
 
-勾选“启用对局记录（本地）”后，终局快照会保存胜负、对手职业、使用的本地牌组和原始结果码，
-每局只记录一次。点击“对局统计”可以查看当前牌组的总胜率以及对各职业的胜负和胜率。
-记录文件默认位于 `%LOCALAPPDATA%\ShadowverseTracker\matches.json`；未知终局不会强行计入胜率。
+Python 依赖只有 [Pillow](https://pypi.org/project/pillow/)，用于在 Tkinter 中显示 WebP 卡图；其余读取功能使用 Python 标准库与 Windows API。二维码导入已从当前版本移除，因此**不需要** OpenCV、pyzbar 等二维码依赖。
 
-牌组不必重新获取官方链接。点击“编辑当前卡组”即可搜索卡牌、调整数量、移除卡牌或添加新卡；
-新增卡牌只会显示当前职业与中立牌，轮换模式再限制为最新六个卡包。保存时仍会校验 40 张和单卡三张上限。
-编辑会保留牌组标识，因此已有对局胜率不会被重置。
-
-本地仓库默认位于 `%LOCALAPPDATA%\ShadowverseTracker\decks.json`。对局读取线程不会扫描
-客户端牌组缓存，因此不会拖慢手牌、场面和生命值刷新。
-
-当前支持版本：`1.9.0.17891`。游戏更新后，如果 DLL 哈希不匹配，程序会停止读取并提示
-不支持当前版本，避免用旧偏移产生错误数据。
-
-地址输入框仅保留为逆向验证时的手动覆盖入口，普通使用无需填写。
-
-Tracker 启动后会自动等待游戏进程并寻找对局对象，无需手动点击读取。对局结束后会继续等待下一局。
-对局统计同时保存先手/后手，统计页会按对手职业显示整体、先手和后手胜率。主界面还提供基于
-当前剩余牌库的抽牌概率计算：选择一张未抽空的牌并输入未来抽牌次数，即可计算至少抽到一张的概率。
-
-## 卡图与发布
-
-把 `SV_WB_Cards/` 放在项目根目录即可显示悬浮牌库中的卡图。这个目录会被打包脚本一并放入发布版，
-用户下载后不需要再额外配置卡图路径。
-
-默认建议生成一个包含资源目录的发布文件夹（启动更快）：
+在 PowerShell 中执行：
 
 ```powershell
-scripts\build_release.ps1
+cd D:\Github\ShadowverseTracker
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -e .
+python run_tracker.py
 ```
 
-如需单个体积较大的 EXE，可执行：
+如果 PowerShell 阻止激活脚本，可仅对当前窗口执行：
 
 ```powershell
-scripts\build_release.ps1 -OneFile
+Set-ExecutionPolicy -Scope Process Bypass
 ```
 
-## 开发原则
-
-- 不修改游戏进程或文件。
-- 不注入 DLL，不绕过访问限制或反作弊机制。
-- 不展示对手隐藏手牌身份。
-- 逆向产物、游戏资源、日志和本地配置不提交到仓库。
-
-## 当前进展
-
-已为游戏版本 `1.9.0.17891` 建立首个版本配置，并实现完全外置的 Windows 只读读取器、
-自动 BattleModel 发现、官方链接导入、本地牌组仓库和剩余牌库账本。
-
-在游戏已经运行后执行：
+也可以不创建虚拟环境，直接安装后运行：
 
 ```powershell
-py scripts/probe_metadata.py
+py -3.11 -m pip install -e .
+py -3.11 run_tracker.py
 ```
 
-需要生成本地逆向工具可用的修复版 metadata 时：
+## 使用说明
+
+1. 启动 Tracker；它会自动等待游戏进程，无需手动填写 BattleModel 地址或点击连接。
+2. 在“当前牌组”中选择已有牌组，或选择职业与模式后，在“链接 / 四位牌组码”中粘贴官方牌组链接、hash、或刚生成的四位牌组码，再导入保存。
+3. 四位牌组码由官方服务查询，通常只有短暂有效期；过期或查询失败时请重新生成，或改用官方链接。
+4. 卡组有小幅调整时，使用“编辑当前卡组”搜索并增删卡牌。保存不会重置该牌组已有胜率。
+5. 勾选“启用对局记录（本地）”即可记录已识别终局；统计窗口会分开显示总计、对职业胜率、先手与后手胜率。
+
+本地数据默认保存在：
+
+```text
+%LOCALAPPDATA%\ShadowverseTracker\decks.json
+%LOCALAPPDATA%\ShadowverseTracker\matches.json
+```
+
+## 构建发布包
+
+构建机需要 Python 3.11+、Pillow 与 PyInstaller。脚本会自动安装后两者，并把卡图、卡牌 CSV 和版本配置一起打入产物：
 
 ```powershell
-py scripts/probe_metadata.py --dump
+cd D:\Github\ShadowverseTracker
+powershell -ExecutionPolicy Bypass -File .\scripts\build_release.ps1
 ```
 
-导出文件位于 `reverse/versions/<游戏版本>/`，已由 `.gitignore` 排除。
+默认输出是启动更快的目录版：
 
-版本验证时，可在 `BattleModel.ExecuteRootUpdated` 命中后把 x64dbg 中的 `RDX`
-交给只读根对象探针：
+```text
+dist\ShadowverseTracker\ShadowverseTracker.exe
+```
+
+如确实需要单个 EXE：
 
 ```powershell
-py scripts/probe_battle_root.py 0x0000YOUR_RDX_ADDRESS
+powershell -ExecutionPolicy Bypass -File .\scripts\build_release.ps1 -OneFile
 ```
 
-这一命令只读取当前快照，用于验证双方计数、自己的手牌对象以及公开历史字段。
-对手隐藏手牌身份不会进入最终记牌器输出。
+由于卡图资源接近 200 MB，推荐默认目录版；发布时将整个 `dist\ShadowverseTracker` 压缩为 ZIP 上传到 GitHub Release。
 
-同时记录 `RCX` 后，可以直接读取 `BattleModel` 当前根状态与响应事件：
+## 测试
 
 ```powershell
-py scripts/probe_battle_model.py 0x0000YOUR_RCX_ADDRESS
+python -m unittest discover -s tests -q
 ```
+
+## 限制与说明
+
+- 这是针对特定游戏版本的研究项目；版本更新后需要新的版本配置才能恢复读取。
+- Tracker 始终以只读方式访问进程，不会改写内存、游戏文件或网络数据。
+- 在线对局不会显示对手隐藏手牌身份；人机本地模式例外，因为客户端会保留该信息。
+- 请自行确认卡图等第三方资源的使用与再分发许可。
