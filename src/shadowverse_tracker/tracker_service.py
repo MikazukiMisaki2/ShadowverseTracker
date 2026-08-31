@@ -12,12 +12,13 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import threading
+import time
 from typing import Callable
 
 from .deck_ledger import DeckLedger
 from .memory.battle import read_battle_model
 from .memory.deck import DeckInfoSnapshot
-from .memory.discovery import find_battle_models
+from .memory.discovery import find_battle_models, find_battle_view_server_data
 from .memory.win32 import ProcessReader, find_process
 from .opponent_hand import OpponentKnownHand
 from .card_catalog import canonical_card_id
@@ -75,6 +76,9 @@ class TrackerService:
         self._output_handle = None
         self._pid: int | None = None
         self._model_address = config.model_address
+        self._battle_view_server_data_address = 0
+        self._server_data_discovery_attempted = False
+        self._server_data_next_retry_at = 0.0
         self._deck_lock = threading.RLock()
         self._selected_deck = config.selected_deck
         self._selected_deck_key = config.selected_deck_key
@@ -621,6 +625,9 @@ class TrackerService:
                                 self._stop.wait(2.0)
                                 continue
                             self._model_address = models[-1]
+                            self._battle_view_server_data_address = 0
+                            self._server_data_discovery_attempted = False
+                            self._server_data_next_retry_at = 0.0
                             self._previous = None
                             with self._deck_lock:
                                 self._ledger = (
@@ -632,10 +639,40 @@ class TrackerService:
                             if self.on_status:
                                 self.on_status(f"已自动连接 0x{self._model_address:X}")
                         try:
+                            if (
+                                not self._server_data_discovery_attempted
+                                and time.monotonic() >= self._server_data_next_retry_at
+                            ):
+                                initial = read_battle_model(reader, self._model_address)
+                                root = initial.get("root")
+                                players = root.get("players") if isinstance(root, dict) else None
+                                player_addresses: tuple[int, int] | None = None
+                                if isinstance(players, (list, tuple)) and len(players) == 2:
+                                    raw_addresses = [
+                                        player.get("address") if isinstance(player, dict) else None
+                                        for player in players
+                                    ]
+                                    if all(isinstance(value, str) for value in raw_addresses):
+                                        player_addresses = (
+                                            int(raw_addresses[0], 16),
+                                            int(raw_addresses[1], 16),
+                                        )
+                                server_data = find_battle_view_server_data(
+                                    reader,
+                                    expected_player_addresses=player_addresses,
+                                )
+                                if server_data:
+                                    self._battle_view_server_data_address = server_data[-1]
+                                    self._server_data_discovery_attempted = True
+                                else:
+                                    self._server_data_next_retry_at = time.monotonic() + 2.0
                             snapshot = read_battle_model(
                                 reader,
                                 self._model_address,
                                 reveal_opponent_hand=self.config.reveal_opponent_hand,
+                                battle_view_server_data_address=(
+                                    self._battle_view_server_data_address or None
+                                ),
                             )
                             self._attach_deck_state(snapshot)
                             self._emit(snapshot)
@@ -646,10 +683,16 @@ class TrackerService:
                                 self.on_error(exc)
                             if self.config.model_address <= 0 and consecutive_errors >= 4:
                                 self._model_address = 0
+                                self._battle_view_server_data_address = 0
+                                self._server_data_discovery_attempted = False
+                                self._server_data_next_retry_at = 0.0
                                 consecutive_errors = 0
                         self._stop.wait(self.config.interval)
             except Exception as exc:
                 if self.on_status:
                     self.on_status(f"等待游戏启动或重新连接：{exc}")
                 self._model_address = 0 if self.config.model_address <= 0 else self.config.model_address
+                self._battle_view_server_data_address = 0
+                self._server_data_discovery_attempted = False
+                self._server_data_next_retry_at = 0.0
                 self._stop.wait(2.0)

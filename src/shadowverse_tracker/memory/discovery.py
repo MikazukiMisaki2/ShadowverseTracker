@@ -6,7 +6,7 @@ import struct
 import re
 from typing import Iterator, Mapping
 
-from .battle import read_battle_model, read_il2cpp_type_name
+from .battle import read_battle_model, read_il2cpp_type_name, read_reference_collection
 from .win32 import MEM_PRIVATE, ProcessReader
 
 
@@ -227,3 +227,34 @@ def find_battle_models(
         except (OSError, ValueError, LookupError):
             continue
     return tuple(sorted(models))
+
+
+def find_battle_view_server_data(
+    reader: ProcessReader,
+    *,
+    expected_player_addresses: tuple[int, int] | None = None,
+) -> tuple[int, ...]:
+    """Find live BattleViewServerData objects, optionally matching one BattleRoot."""
+    classes = find_il2cpp_classes(reader, "BattleViewServerData", "Wizard2.View")
+    values: set[int] = set()
+    for candidate, _ in find_pointer_references_many(
+        reader,
+        classes,
+        maximum_hits=4096,
+    ):
+        try:
+            if read_il2cpp_type_name(reader, candidate) != "Wizard2.View.BattleViewServerData":
+                continue
+            players_collection = reader.read_u64(candidate + 0x10)
+            players = read_reference_collection(reader, players_collection, maximum=2)
+            if len(players) != 2 or not all(
+                read_il2cpp_type_name(reader, player).endswith("BattleStatePlayerMpo")
+                for player in players
+            ):
+                continue
+            if expected_player_addresses is not None and players != expected_player_addresses:
+                continue
+            values.add(candidate)
+        except (OSError, ValueError):
+            continue
+    return tuple(sorted(values))

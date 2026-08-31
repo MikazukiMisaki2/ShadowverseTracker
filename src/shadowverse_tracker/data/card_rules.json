@@ -1,0 +1,4183 @@
+{
+  "10501110": {
+    "name": "挥毫的怪物",
+    "cost": 1,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10703210": {
+    "name": "巴别隆城",
+    "cost": 1,
+    "type": 3,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10112120": {
+    "name": "纯真的水之妖精",
+    "cost": 1,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90011110
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10614120": {
+    "name": "古旧天枪·萨莎妮德",
+    "cost": 1,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 1
+          },
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90014330
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10711120": {
+    "name": "精灵陷阱师",
+    "cost": 1,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90011110
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10111310": {
+    "name": "妖精召集令",
+    "cost": 1,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90011110
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10021110": {
+    "name": "须臾剑士",
+    "cost": 1,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10122110": {
+    "name": "统率的鲁米那斯骑士",
+    "cost": 1,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10621110": {
+    "name": "勇烈的士兵",
+    "cost": 2,
+    "type": 1,
+    "static": {
+      "has_rush": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10722310": {
+    "name": "无音的包围",
+    "cost": 1,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90021120
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "90021310": {
+    "name": "黄金短剑",
+    "cost": 1,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target_choice": [
+              "enemy_leader",
+              "enemy_follower"
+            ],
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10931310": {
+    "name": "过度反应",
+    "cost": 1,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              10031320
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10941110": {
+    "name": "碎裂的盗匪",
+    "cost": 1,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          },
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              10941110
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10843310": {
+    "name": "狐火蜃景",
+    "cost": 1,
+    "type": 4,
+    "on_play": [
+      {
+        "if": {
+          "overflow": true
+        },
+        "do": [
+          {
+            "op": "deal_damage",
+            "target_choice": [
+              "enemy_leader",
+              "enemy_follower"
+            ],
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "90043110": {
+    "name": "乙姬近卫队",
+    "cost": 3,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10052110": {
+    "name": "魅惑的魅魔·莉莉姆",
+    "cost": 1,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90051120
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10251120": {
+    "name": "怨恨的栽培者",
+    "cost": 1,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90051130
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "90051130": {
+    "name": "怨灵",
+    "cost": 1,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10851120": {
+    "name": "可爱恶魔·莉莉姆",
+    "cost": 1,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "all_leaders",
+            "amount": 1
+          },
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90051120
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "90061110": {
+    "name": "神圣猎鹰",
+    "cost": 3,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10171110": {
+    "name": "耀眼的发明家·伊莉斯",
+    "cost": 1,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90071220
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "90073120": {
+    "name": "毁灭创造物β",
+    "cost": 5,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 3
+          }
+        ]
+      }
+    ]
+  },
+  "90074110": {
+    "name": "卓越创造物Ω",
+    "cost": 10,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10271120": {
+    "name": "猫偶",
+    "cost": 1,
+    "type": 1,
+    "static": {
+      "has_rush": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90071110
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10771310": {
+    "name": "跑酷",
+    "cost": 1,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90071130,
+              90071140
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10001110": {
+    "name": "不屈的剑斗士",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 3
+          }
+        ]
+      }
+    ]
+  },
+  "10202110": {
+    "name": "女仆天使·切蕾塔",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "if": {
+          "super_evolve_unlocked": true
+        },
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 0
+          }
+        ]
+      }
+    ]
+  },
+  "10403120": {
+    "name": "掌握天空命运的少女·露莉亚",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "recover_pp",
+            "amount": 7
+          }
+        ]
+      }
+    ]
+  },
+  "10601110": {
+    "name": "浑浊之民",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10801110": {
+    "name": "自律的圣鸟·汉萨",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 5
+          }
+        ]
+      }
+    ],
+    "on_evolve": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 5
+          }
+        ]
+      }
+    ]
+  },
+  "10011110": {
+    "name": "妖精驯服者",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90011110
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10112130": {
+    "name": "年幼宝石兽",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "recover_pp",
+            "amount": 3
+          }
+        ]
+      }
+    ],
+    "on_super_evolve": [
+      {
+        "do": [
+          {
+            "op": "recover_pp",
+            "amount": 3
+          }
+        ]
+      }
+    ]
+  },
+  "10212120": {
+    "name": "妖精击剑士",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90011110
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10311120": {
+    "name": "妖精剑的后继者",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10612110": {
+    "name": "慈颜的拥趸",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90011120
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10712110": {
+    "name": "绿风细剑师",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10812110": {
+    "name": "太古的妖精·露芙蕾",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90011110
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10814120": {
+    "name": "永恒冰晶·蒂亚",
+    "cost": 2,
+    "type": 1,
+    "static": {
+      "has_rush": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90014110
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "90014110": {
+    "name": "冰晶剑士·伊芙",
+    "cost": 3,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10912110": {
+    "name": "根延潜伏者",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90011110
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10511310": {
+    "name": "虫风花的飞翔",
+    "cost": 2,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90011110
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10011210": {
+    "name": "缭乱之庭",
+    "cost": 2,
+    "type": 3,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90011110
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10112210": {
+    "name": "磷光辉岩",
+    "cost": 2,
+    "type": 2,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90011110,
+              90011310
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10223120": {
+    "name": "假日中的王女·普莉姆",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90023110
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "90023110": {
+    "name": "安静的女仆·诺嘉",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10321110": {
+    "name": "篡夺的肯定者",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90021330,
+              90021320
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10322110": {
+    "name": "篡夺的祈祷者",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90021340,
+              90021310
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10421110": {
+    "name": "信念腿法·兰德尔",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10624120": {
+    "name": "古旧天剑·伊德梅塔",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90024320
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10921110": {
+    "name": "海域斥候",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90021330
+            ]
+          }
+        ]
+      }
+    ],
+    "on_evolve": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90021330
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "90021210": {
+    "name": "令人战栗的海盗旗",
+    "cost": 1,
+    "type": 3,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10323310": {
+    "name": "奉还的剑闪",
+    "cost": 2,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90021310
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10231110": {
+    "name": "憧憬的魔女·梅薇",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              10031210
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10831120": {
+    "name": "玛纳利亚书记官·波比",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90031310
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10931110": {
+    "name": "沉溺的实验体",
+    "cost": 2,
+    "type": 1,
+    "static": {
+      "has_rush": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 3
+          }
+        ]
+      }
+    ]
+  },
+  "10433310": {
+    "name": "炼金炎爆",
+    "cost": 2,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10244110": {
+    "name": "银冰龙少女·菲琳",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "if": {
+          "overflow": true
+        },
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90044310
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10542120": {
+    "name": "水母舞姬",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90041130
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10644120": {
+    "name": "古旧天刀·波菈莱",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90044330
+            ]
+          }
+        ]
+      }
+    ],
+    "on_evolve": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90044330
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "90044330": {
+    "name": "天刀深渊",
+    "cost": 2,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10841130": {
+    "name": "沧海之精",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90041130
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10942110": {
+    "name": "绝倒的袭击者",
+    "cost": 2,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10543310": {
+    "name": "懒惰的波摇花",
+    "cost": 2,
+    "type": 4,
+    "on_play": [
+      {
+        "if": {
+          "overflow": true
+        },
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10051130": {
+    "name": "恶毒的小木乃伊",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10152110": {
+    "name": "干练的死神·蜜诺",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90051110
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10451110": {
+    "name": "憧憬的铁锤·阿尔梅达",
+    "cost": 2,
+    "type": 1,
+    "static": {
+      "has_rush": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10551110": {
+    "name": "鼓舞之狼",
+    "cost": 2,
+    "type": 1,
+    "static": {
+      "has_rush": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 0
+          }
+        ]
+      }
+    ]
+  },
+  "10751110": {
+    "name": "暗夜键盘手·露露米",
+    "cost": 2,
+    "type": 1,
+    "static": {
+      "has_rush": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90051120
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10951110": {
+    "name": "强袭的特攻队长",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "all_leaders",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10153310": {
+    "name": "蛇神之怒",
+    "cost": 2,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target_choice": [
+              "enemy_leader",
+              "enemy_follower"
+            ],
+            "amount": 3
+          }
+        ]
+      }
+    ]
+  },
+  "10952310": {
+    "name": "锁链相连",
+    "cost": 2,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "all_leaders",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10161140": {
+    "name": "潜伏的曼纽",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10162110": {
+    "name": "煌枪魔兔·萨莉沙",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10071120": {
+    "name": "人偶长矛手",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90071120
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10072110": {
+    "name": "电鞭手",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90071220
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10171130": {
+    "name": "永不停火的枪手",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90071210
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10172120": {
+    "name": "依恋的人偶师",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90071110
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10273110": {
+    "name": "暗狱的余晖·贾丝珀",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90071220
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10471130": {
+    "name": "报恩工匠·艾萨克",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90072110
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10674120": {
+    "name": "古旧天斧·尤泽塔",
+    "cost": 2,
+    "type": 1,
+    "static": {
+      "has_rush": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90074320
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10772110": {
+    "name": "悠然的滑手",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90071140
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10874120": {
+    "name": "你的前辈·欧丝",
+    "cost": 2,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90071130
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10172310": {
+    "name": "生命的奔流",
+    "cost": 2,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90071220
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "90074220": {
+    "name": "新约·黑之章",
+    "cost": 3,
+    "type": 3,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10072210": {
+    "name": "人偶剧场",
+    "cost": 2,
+    "type": 3,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90071110,
+              90071110
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10101120": {
+    "name": "观察的侦探",
+    "cost": 3,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              10001210
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10303110": {
+    "name": "充满勇气之人",
+    "cost": 3,
+    "type": 1,
+    "static": {
+      "has_rush": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10304120": {
+    "name": "涸绝的显现·吉尔内莉莎",
+    "cost": 3,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90004330
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10111120": {
+    "name": "恋触妖精",
+    "cost": 3,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90011110
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10113140": {
+    "name": "屠戮破魔虫",
+    "cost": 3,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "scale_by": "combo_count"
+          }
+        ]
+      }
+    ]
+  },
+  "10514120": {
+    "name": "虫风花·魅禄",
+    "cost": 3,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "recover_pp",
+            "amount": 2
+          },
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90011110
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10914110": {
+    "name": "烟管的罪人·曲千代",
+    "cost": 3,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ],
+    "on_super_evolve": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10112310": {
+    "name": "薰交的思慕",
+    "cost": 3,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90011310
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10022120": {
+    "name": "魔煌的诡谲者·拉斯提",
+    "cost": 3,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ],
+    "on_super_evolve": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10123120": {
+    "name": "沉默的狙击手·瓦路兹",
+    "cost": 3,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10124130": {
+    "name": "常在战场·景光",
+    "cost": 3,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ],
+    "on_super_evolve": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10421130": {
+    "name": "迷茫的狮子·莫德雷德",
+    "cost": 3,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10521120": {
+    "name": "烟管美玉",
+    "cost": 3,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 1
+          },
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90021350
+            ]
+          }
+        ]
+      }
+    ],
+    "on_evolve": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90021350
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10622110": {
+    "name": "忠烈的近卫兵",
+    "cost": 3,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10721120": {
+    "name": "传调联络兵",
+    "cost": 3,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90021120
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10822110": {
+    "name": "越狱者·卡婕",
+    "cost": 3,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90021350
+            ]
+          }
+        ]
+      }
+    ],
+    "on_evolve": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90021350
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10922110": {
+    "name": "漩涡炮手",
+    "cost": 3,
+    "type": 1,
+    "static": {
+      "has_rush": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90021320
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10523310": {
+    "name": "荣耀的丽金花",
+    "cost": 3,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90021350
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10922310": {
+    "name": "燃尽之缘",
+    "cost": 3,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              10922310
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10031110": {
+    "name": "闪光魔法剑士",
+    "cost": 3,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10434110": {
+    "name": "水之法则·瓦姆杜斯",
+    "cost": 3,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10833110": {
+    "name": "玛纳利亚文书官·琪可",
+    "cost": 3,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90031310
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10833310": {
+    "name": "钢铁的小憩",
+    "cost": 3,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "recover_pp",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10932310": {
+    "name": "人性的爱",
+    "cost": 3,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              10931110
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10142120": {
+    "name": "御风者·叶花",
+    "cost": 3,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10142130": {
+    "name": "读风者·杰鲁",
+    "cost": 3,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "grant_status",
+            "target": "other_ally_follower",
+            "status": "storm"
+          }
+        ]
+      }
+    ],
+    "on_super_evolve": [
+      {
+        "do": [
+          {
+            "op": "grant_status",
+            "target": "other_ally_follower",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10151110": {
+    "name": "午夜眷属·埃拉尔",
+    "cost": 3,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10252110": {
+    "name": "爆破之翼·圮尤拉",
+    "cost": 3,
+    "type": 1,
+    "static": {
+      "has_rush": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10253110": {
+    "name": "悲惨战争·萝拉",
+    "cost": 3,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "grant_status",
+            "target": "other_ally_follower",
+            "status": "storm"
+          }
+        ]
+      }
+    ],
+    "on_super_evolve": [
+      {
+        "do": [
+          {
+            "op": "grant_status",
+            "target": "other_ally_follower",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10351110": {
+    "name": "混融的肯定者",
+    "cost": 3,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10452130": {
+    "name": "元素共鸣·巴尔",
+    "cost": 3,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10651120": {
+    "name": "逃避幽灵者",
+    "cost": 3,
+    "type": 1,
+    "static": {
+      "has_rush": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90051130
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10353310": {
+    "name": "叫唤与憎恶",
+    "cost": 3,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "recover_pp",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10753310": {
+    "name": "夜之歌的演唱会",
+    "cost": 3,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10852310": {
+    "name": "启程的退场",
+    "cost": 3,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10461110": {
+    "name": "英雄幻视·托路",
+    "cost": 3,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10962120": {
+    "name": "奇迹独角兔",
+    "cost": 3,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10071110": {
+    "name": "炮击猫兽人",
+    "cost": 3,
+    "type": 1,
+    "static": {
+      "has_rush": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90071210
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10171140": {
+    "name": "自动机械刺客",
+    "cost": 3,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90071120
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10471110": {
+    "name": "夜王再起·翔",
+    "cost": 3,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10872120": {
+    "name": "门扉接续者·拉姿莉",
+    "cost": 3,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90071160
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "90071160": {
+    "name": "绚烂的创造物",
+    "cost": 3,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10773310": {
+    "name": "瞬移斩击",
+    "cost": 3,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10304110": {
+    "name": "绝大的显现·麦哲佩恩",
+    "cost": 4,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90004320
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10802110": {
+    "name": "激动的欢喜·阿尔菲德",
+    "cost": 4,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ],
+    "on_evolve": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10301310": {
+    "name": "至高的凌驾",
+    "cost": 4,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "recover_pp",
+            "amount": 3
+          }
+        ]
+      }
+    ]
+  },
+  "10413110": {
+    "name": "幻彩弓手·丘比丹",
+    "cost": 4,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 3
+          }
+        ]
+      }
+    ]
+  },
+  "10611110": {
+    "name": "慈育的森民",
+    "cost": 4,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90011120
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10222120": {
+    "name": "平凡骑士·拉奇尔",
+    "cost": 4,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "recover_pp",
+            "amount": 2
+          }
+        ]
+      }
+    ],
+    "on_evolve": [
+      {
+        "do": [
+          {
+            "op": "recover_pp",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10323110": {
+    "name": "篡夺的团结者",
+    "cost": 4,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "recover_pp",
+            "amount": 1
+          }
+        ]
+      }
+    ],
+    "on_evolve": [
+      {
+        "do": [
+          {
+            "op": "recover_pp",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10424110": {
+    "name": "真红与群青·塞达&贝阿朵丽丝",
+    "cost": 4,
+    "type": 1,
+    "static": {
+      "has_rush": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10623110": {
+    "name": "暴烈的参谋",
+    "cost": 4,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "recover_pp",
+            "amount": 3
+          },
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              10621110
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10133130": {
+    "name": "理光的天宫·艾德薇诗",
+    "cost": 4,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "recover_pp",
+            "amount": 2
+          }
+        ]
+      }
+    ],
+    "on_evolve": [
+      {
+        "do": [
+          {
+            "op": "recover_pp",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10434120": {
+    "name": "天才美少女炼金术士·卡莉奥丝特罗",
+    "cost": 4,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90034320
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "90034320": {
+    "name": "伟大之术",
+    "cost": 1,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target_choice": [
+              "enemy_leader",
+              "enemy_follower"
+            ],
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10231310": {
+    "name": "冰锥穿击",
+    "cost": 4,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10641310": {
+    "name": "天刀授予",
+    "cost": 4,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              10641310
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10253120": {
+    "name": "夜曲将军·艾瑟拉",
+    "cost": 4,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10652120": {
+    "name": "失恋恶魔",
+    "cost": 4,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10654120": {
+    "name": "古旧天眼·比芭提",
+    "cost": 4,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90054330
+            ]
+          }
+        ]
+      }
+    ],
+    "on_evolve": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90054330
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10851110": {
+    "name": "通透的信念·安瑟珠",
+    "cost": 4,
+    "type": 1,
+    "static": {
+      "has_storm": true,
+      "ignore_ward": true
+    }
+  },
+  "10162120": {
+    "name": "煌翼羽人·莉诺",
+    "cost": 4,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 1
+          },
+          {
+            "op": "set_max_attacks",
+            "amount": 2
+          }
+        ]
+      }
+    ],
+    "on_super_evolve": [
+      {
+        "do": [
+          {
+            "op": "set_max_attacks",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10364120": {
+    "name": "绝望的显现·玛温",
+    "cost": 4,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90064310
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10462110": {
+    "name": "沙神的巫女·莎拉",
+    "cost": 4,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 0
+          }
+        ]
+      }
+    ]
+  },
+  "90061130": {
+    "name": "壮丽大神隼",
+    "cost": 6,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10663210": {
+    "name": "崇高的天书",
+    "cost": 4,
+    "type": 3,
+    "on_play": [
+      {
+        "if": {
+          "target_is_ally_amulet": true
+        },
+        "do": [
+          {
+            "op": "recover_pp",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10374120": {
+    "name": "奏绝的显现·莉洁纳",
+    "cost": 4,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90074310
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10571110": {
+    "name": "舞台缔造者",
+    "cost": 4,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10572110": {
+    "name": "新时代地理学者",
+    "cost": 4,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90073120
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10774120": {
+    "name": "奋厉追赶·米乌",
+    "cost": 4,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ],
+    "on_super_evolve": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10872110": {
+    "name": "人造的馈赠·蕾拉",
+    "cost": 4,
+    "type": 1,
+    "static": {
+      "has_rush": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90071140
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10371310": {
+    "name": "丝线突袭",
+    "cost": 4,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90071110
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10903110": {
+    "name": "无我看守",
+    "cost": 5,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "recover_pp",
+            "amount": 1
+          },
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              10901110
+            ]
+          }
+        ]
+      }
+    ],
+    "on_evolve": [
+      {
+        "do": [
+          {
+            "op": "recover_pp",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10511120": {
+    "name": "森林羽子板工匠",
+    "cost": 5,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10124110": {
+    "name": "雷维翁的迅雷·阿尔贝尔",
+    "cost": 5,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "set_max_attacks",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10824110": {
+    "name": "天命的子弹·巴妮&巴隆",
+    "cost": 5,
+    "type": 1,
+    "static": {
+      "has_rush": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 4
+          },
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90024330
+            ]
+          }
+        ]
+      }
+    ],
+    "on_evolve": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90024330
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10922120": {
+    "name": "凶猛指挥官",
+    "cost": 5,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 3
+          }
+        ]
+      }
+    ]
+  },
+  "10423310": {
+    "name": "骁勇骑士",
+    "cost": 5,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "recover_pp",
+            "amount": 2
+          },
+          {
+            "op": "set_max_attacks",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10131110": {
+    "name": "符文剑操控师",
+    "cost": 5,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10832320": {
+    "name": "伏地雷击",
+    "cost": 5,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 2
+          },
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              10832320
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10141120": {
+    "name": "海沟大剑龙",
+    "cost": 5,
+    "type": 1,
+    "on_play": [
+      {
+        "if": {
+          "overflow": true
+        },
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10344120": {
+    "name": "烈绝的显现·嘉尔缪",
+    "cost": 5,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10444120": {
+    "name": "世界的伙伴·佐伊",
+    "cost": 5,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10842110": {
+    "name": "闪耀旋律·莉芙&萝萝",
+    "cost": 5,
+    "type": 1,
+    "static": {
+      "has_rush": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90041130
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10154130": {
+    "name": "无极猎人·阿拉加维",
+    "cost": 5,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "all_leaders",
+            "amount": 3
+          }
+        ]
+      }
+    ],
+    "on_evolve": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "all_leaders",
+            "amount": 3
+          }
+        ]
+      }
+    ]
+  },
+  "10263110": {
+    "name": "速断之刃·阿尼耶丝",
+    "cost": 5,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10864120": {
+    "name": "希望的光彩·莉迪耶尔",
+    "cost": 5,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 3
+          }
+        ]
+      }
+    ]
+  },
+  "10274120": {
+    "name": "精神武艺·迦尔拉",
+    "cost": 5,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "set_max_attacks",
+            "amount": 2
+          }
+        ]
+      }
+    ],
+    "on_super_evolve": [
+      {
+        "do": [
+          {
+            "op": "set_max_attacks",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10473110": {
+    "name": "向往天空的回归者·卡西乌斯",
+    "cost": 5,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90072120
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10874110": {
+    "name": "决断的交错·亚修雷&莉缇雅",
+    "cost": 5,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10973110": {
+    "name": "铸铁亲信",
+    "cost": 5,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10173210": {
+    "name": "遗产的炮击",
+    "cost": 5,
+    "type": 2,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90071210
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10603110": {
+    "name": "彷徨于黑暗之兽",
+    "cost": 6,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10612120": {
+    "name": "咆哮狼人",
+    "cost": 6,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10714120": {
+    "name": "冰界鹿王",
+    "cost": 6,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90011310
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10124120": {
+    "name": "白银骑士团团长·艾蜜莉亚",
+    "cost": 6,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "recover_pp",
+            "amount": 3
+          }
+        ]
+      }
+    ]
+  },
+  "10624110": {
+    "name": "惨烈的剑王·罗德诺艾尔四世",
+    "cost": 6,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10834110": {
+    "name": "恩爱的大地·坦忒拉&拉缇卡",
+    "cost": 6,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90034340,
+              90034350
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "90034350": {
+    "name": "宏大的回归",
+    "cost": 1,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "set_max_attacks",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10144120": {
+    "name": "霸道的龙翼·法露特",
+    "cost": 6,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10843110": {
+    "name": "穹顶的战火·杰亚达",
+    "cost": 6,
+    "type": 1,
+    "static": {
+      "has_rush": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "set_max_attacks",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10842310": {
+    "name": "末世死化妆",
+    "cost": 6,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 4
+          }
+        ]
+      }
+    ]
+  },
+  "10051110": {
+    "name": "魔狼首领",
+    "cost": 6,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10953110": {
+    "name": "激烈的副总长",
+    "cost": 6,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "all_leaders",
+            "amount": 3
+          }
+        ]
+      }
+    ],
+    "on_super_evolve": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "all_leaders",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10172130": {
+    "name": "杀意之丝·诺亚",
+    "cost": 6,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90071110
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10271110": {
+    "name": "引擎剑士",
+    "cost": 6,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90071220
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10972120": {
+    "name": "刀线客",
+    "cost": 6,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10104110": {
+    "name": "勇武的堕天使·奥莉薇",
+    "cost": 7,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "recover_pp",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10204110": {
+    "name": "命运黄昏·奥丁",
+    "cost": 7,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10012120": {
+    "name": "音速射手·塞尔文",
+    "cost": 7,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10411110": {
+    "name": "爱恨舞者·晧&曜",
+    "cost": 7,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "set_max_attacks",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10814110": {
+    "name": "离合有终·赛德斯&梅希亚",
+    "cost": 7,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10123110": {
+    "name": "雷维翁之斧·杰诺",
+    "cost": 7,
+    "type": 1,
+    "static": {
+      "has_rush": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "set_max_attacks",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10522120": {
+    "name": "吉祥蛙",
+    "cost": 7,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90021350
+            ]
+          }
+        ]
+      }
+    ],
+    "on_evolve": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90021350
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10924110": {
+    "name": "逆行的罪人·巴巴洛丝",
+    "cost": 7,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10123310": {
+    "name": "触手撕咬",
+    "cost": 7,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target_choice": [
+              "enemy_leader",
+              "enemy_follower"
+            ],
+            "amount": 5
+          }
+        ]
+      }
+    ]
+  },
+  "10134110": {
+    "name": "五行之巅·久苑",
+    "cost": 7,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ],
+    "on_super_evolve": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10931120": {
+    "name": "钥灵",
+    "cost": 7,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 4
+          }
+        ]
+      }
+    ]
+  },
+  "10644110": {
+    "name": "断头的斩姬·相枛津",
+    "cost": 7,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              10642310
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10944110": {
+    "name": "穿孔的罪人·安缇马丽亚",
+    "cost": 7,
+    "type": 1,
+    "static": {
+      "has_rush": true,
+      "ignore_ward": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10643310": {
+    "name": "断头的天刀",
+    "cost": 7,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              10643310,
+              10643310
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10743310": {
+    "name": "黑炎的奔流",
+    "cost": 7,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 3
+          }
+        ]
+      }
+    ]
+  },
+  "10354120": {
+    "name": "绝叫与爱绝的显现·鲁鲁纳伊&巴娜蕾卡",
+    "cost": 7,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90054310,
+              90054320
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "90054320": {
+    "name": "爱绝的飞翔",
+    "cost": 0,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10753110": {
+    "name": "骸骨驯兽师",
+    "cost": 7,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "grant_status",
+            "target": "other_ally_follower",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10952120": {
+    "name": "闪烁恶魔",
+    "cost": 7,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10472120": {
+    "name": "严厉的教官·伊尔莎",
+    "cost": 7,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 4
+          }
+        ]
+      }
+    ]
+  },
+  "10314120": {
+    "name": "绝命的显现·艾斯迪亚",
+    "cost": 8,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90014320
+            ]
+          }
+        ]
+      }
+    ],
+    "on_evolve": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90014320
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "90014320": {
+    "name": "绝命的痛击",
+    "cost": 6,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 6
+          }
+        ]
+      }
+    ]
+  },
+  "10614110": {
+    "name": "慈爱的凛华·奥尔提雅",
+    "cost": 8,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "set_max_attacks",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10021130": {
+    "name": "人马骑士",
+    "cost": 8,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10224120": {
+    "name": "雷维翁超越者·尤里乌斯",
+    "cost": 8,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10622120": {
+    "name": "猫人水手",
+    "cost": 8,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10824120": {
+    "name": "焦灼炎将·玛尔斯",
+    "cost": 8,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "buff_attack",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10734120": {
+    "name": "可爱杰作",
+    "cost": 8,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 3
+          }
+        ]
+      }
+    ]
+  },
+  "10041130": {
+    "name": "凶鲨战士",
+    "cost": 8,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 6
+          }
+        ]
+      }
+    ]
+  },
+  "10442120": {
+    "name": "淳朴的钢铁之躯·无限",
+    "cost": 8,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10942120": {
+    "name": "龙人管家",
+    "cost": 8,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "recover_pp",
+            "amount": 3
+          }
+        ]
+      }
+    ]
+  },
+  "90054110": {
+    "name": "守卫犬的右腕·米米",
+    "cost": 1,
+    "type": 1,
+    "static": {
+      "has_rush": true
+    },
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10351120": {
+    "name": "泡沫鬼姬",
+    "cost": 8,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10854110": {
+    "name": "出发的憧憬·苇剑&武津御",
+    "cost": 8,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 4
+          },
+          {
+            "op": "recover_pp",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "10954120": {
+    "name": "伽罗塔德 对 泽特",
+    "cost": 8,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10062120": {
+    "name": "神圣狮鹫",
+    "cost": 8,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10762120": {
+    "name": "传言圣鸟",
+    "cost": 8,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10174120": {
+    "name": "迈进之心·奥契丝",
+    "cost": 8,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          }
+        ]
+      }
+    ]
+  },
+  "10774110": {
+    "name": "虚刻的安纳提玛·斯卡雷特",
+    "cost": 8,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10604110": {
+    "name": "恐惧的象征·欧米伽奥提普",
+    "cost": 9,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 2
+          },
+          {
+            "op": "recover_pp",
+            "amount": 2
+          },
+          {
+            "op": "buff_attack",
+            "amount": 4
+          }
+        ]
+      }
+    ]
+  },
+  "10114120": {
+    "name": "丰丽的玫瑰皇后",
+    "cost": 9,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "set_max_attacks",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "90014310": {
+    "name": "蔷薇之闪击",
+    "cost": 1,
+    "type": 4,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target_choice": [
+              "enemy_leader",
+              "enemy_follower"
+            ],
+            "amount": 3
+          }
+        ]
+      }
+    ]
+  },
+  "10344110": {
+    "name": "侮蔑的继承者·安吉拉弗利特",
+    "cost": 9,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10754120": {
+    "name": "死亡主持人·马克米朗",
+    "cost": 9,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 1
+          }
+        ]
+      }
+    ]
+  },
+  "10664120": {
+    "name": "古旧天书·莲妥丝",
+    "cost": 9,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90064320
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "90064320": {
+    "name": "天书深渊",
+    "cost": 0,
+    "type": 4,
+    "on_play": [
+      {
+        "if": {
+          "target_is_ally_amulet": true
+        },
+        "do": [
+          {
+            "op": "destroy_target",
+            "target": "selected_ally_amulet"
+          },
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 2
+          },
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90064320
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10173130": {
+    "name": "疯狂的创造者·历亚姆",
+    "cost": 9,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 2
+          }
+        ]
+      }
+    ],
+    "on_evolve": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 2
+          }
+        ]
+      }
+    ]
+  },
+  "90004110": {
+    "name": "沉默的魔将",
+    "cost": 6,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10924120": {
+    "name": "武皇的变貌·贝尔铁佐",
+    "cost": 10,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10634120": {
+    "name": "古旧天晶·卡卢基典瑟拉",
+    "cost": 10,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "gain_status",
+            "status": "storm"
+          },
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90034330
+            ]
+          }
+        ]
+      }
+    ],
+    "on_evolve": [
+      {
+        "do": [
+          {
+            "op": "add_to_hand",
+            "card_ids": [
+              90034330
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "10143110": {
+    "name": "再临之创世龙",
+    "cost": 10,
+    "type": 1,
+    "static": {
+      "has_storm": true
+    }
+  },
+  "10544110": {
+    "name": "约束的《正义》·伊兰翠",
+    "cost": 10,
+    "type": 1,
+    "on_play": [
+      {
+        "do": [
+          {
+            "op": "deal_damage",
+            "target": "enemy_leader",
+            "amount": 8
+          }
+        ]
+      }
+    ]
+  }
+}
