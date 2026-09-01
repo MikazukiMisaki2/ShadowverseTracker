@@ -609,7 +609,10 @@ class TrackerService:
                 with ProcessReader(pid) as reader:
                     profile = verify_process_version(reader)
                     if self.on_status:
-                        self.on_status(f"版本 {profile.game_version} 校验通过")
+                        if profile.auto_compatible:
+                            self.on_status(f"检测到游戏小版本更新，{profile.game_version}，核心结构校验通过")
+                        else:
+                            self.on_status(f"版本 {profile.game_version} 校验通过")
                     consecutive_errors = 0
                     while not self._stop.is_set():
                         if self._model_address <= 0:
