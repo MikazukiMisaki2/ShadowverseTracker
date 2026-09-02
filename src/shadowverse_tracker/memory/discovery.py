@@ -6,7 +6,12 @@ import struct
 import re
 from typing import Iterator, Mapping
 
-from .battle import read_battle_model, read_il2cpp_type_name, read_reference_collection
+from .battle import (
+    read_battle_model,
+    read_battle_root,
+    read_il2cpp_type_name,
+    read_reference_collection,
+)
 from .win32 import MEM_PRIVATE, ProcessReader
 
 
@@ -227,6 +232,52 @@ def find_battle_models(
         except (OSError, ValueError, LookupError):
             continue
     return tuple(sorted(models))
+
+
+def find_battle_roots(
+    reader: ProcessReader,
+    *,
+    maximum_hits: int = 10000,
+) -> tuple[int, ...]:
+    """Find live ``BattleRootMpo`` objects used by Puzzle/teaching battles.
+
+    Puzzle battles are hosted by ``BattlePuzzleModel`` rather than the normal
+    ``BattleModel``.  The latter is the only object that exposes the regular
+    root property, so scanning only BattleModel instances makes an active
+    puzzle look like no battle at all.  ``BattleRootMpo`` is shared by both
+    modes and has a stable MessagePack-object layout; validate the decoded
+    root before returning it to avoid stale heap objects.
+    """
+    classes = find_il2cpp_classes(
+        reader,
+        "BattleRootMpo",
+        "Wizard2.ServerShared.MessagePackObjects",
+    )
+    if not classes:
+        return ()
+    roots: set[int] = set()
+    for candidate, _ in find_pointer_references_many(
+        reader,
+        classes,
+        maximum_hits=maximum_hits,
+    ):
+        try:
+            if read_il2cpp_type_name(reader, candidate) != (
+                "Wizard2.ServerShared.MessagePackObjects.BattleRootMpo"
+            ):
+                continue
+            root = read_battle_root(reader, candidate)
+            if len(root.players) != 2:
+                continue
+            # Reject released/stale roots while allowing the mulligan turn 0.
+            if not all(0 <= player.turn <= 99 for player in root.players):
+                continue
+            if len({player.unique_id for player in root.players}) != 2:
+                continue
+            roots.add(candidate)
+        except (OSError, ValueError, LookupError):
+            continue
+    return tuple(sorted(roots))
 
 
 def find_battle_view_server_data(

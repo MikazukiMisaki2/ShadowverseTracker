@@ -142,6 +142,17 @@ class DeckRepository:
         self.save()
         return deck
 
+    def clear_selection(self) -> None:
+        """Keep saved decks but make the active deck empty.
+
+        Puzzle/teaching battles do not necessarily use a registered 40-card
+        deck.  Clearing the selection is distinct from deleting a saved deck
+        and is persisted so reconnecting does not silently reattach a deck
+        ledger.
+        """
+        self.active_key = None
+        self.save()
+
     def update_cards(self, key: str, cards: tuple[DeckCard, ...]) -> SavedDeck:
         """Replace a deck list while preserving its key and match statistics."""
         deck = next((item for item in self.decks if item.key == key), None)

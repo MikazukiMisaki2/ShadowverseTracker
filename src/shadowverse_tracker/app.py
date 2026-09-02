@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import json
+from functools import lru_cache
 import math
 import os
 from pathlib import Path
 import queue
 import re
 import sys
+import threading
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 try:
@@ -19,6 +22,7 @@ except ImportError:  # image support remains optional for source runs
     ImageTk = None  # type: ignore[assignment]
 
 from .card_catalog import (
+    canonical_card_id,
     get_card_metadata,
     get_card_name,
     is_card_allowed,
@@ -31,6 +35,7 @@ from .official_deck import OfficialDeck, OfficialDeckError, import_deck_code, pa
 from .match_history import CLASS_NAMES, MatchHistory, MatchRecord, class_name, result_label, terminal_match_id
 from .opponent_hand import UNKNOWN_CARD_TYPE_LABELS, OpponentKnownHand
 from .opponent_key_probability import calculate_key_probability
+from .lethal_bridge import LethalBridge, create_lethal_bridge
 from .tracker_service import TrackerConfig, TrackerService
 
 
@@ -65,6 +70,22 @@ class TrackerApp(tk.Tk):
         self._deck_choice_keys: list[str] = []
         self._opponent_known_hand = OpponentKnownHand()
         self._last_snapshot: dict[str, object] | None = None
+        # The calculator is an optional sibling checkout.  Keeping the bridge
+        # nullable means the tracker remains useful when the solver/catalog
+        # is not installed or its generated data is temporarily malformed.
+        self._lethal_bridge: LethalBridge | None = None
+        self._lethal_status_message = ""
+        # Lethal search can take hundreds of milliseconds for a busy hand.
+        # Keep it off Tk's event thread and discard results for superseded
+        # snapshots so an older calculation can never overwrite the board.
+        self._lethal_lock = threading.Lock()
+        self._lethal_generation = 0
+        self._lethal_pending = False
+        self._lethal_restart_requested = False
+        self._lethal_dirty = True
+        self._lethal_latest_snapshot: dict[str, object] | None = None
+        self._lethal_view: object | None = None
+        self._lethal_view_generation = -1
         self._overlay: tk.Toplevel | None = None
         self._overlay_canvas: tk.Canvas | None = None
         self._overlay_drag_origin: tuple[int, int] | None = None
@@ -73,6 +94,7 @@ class TrackerApp(tk.Tk):
         self._card_image_paths: dict[int, Path | None] = {}
         self._card_image_roots = self._find_card_image_roots()
         self._build_ui(args)
+        self._init_lethal_bridge()
         self.after(100, self._drain_events)
         # Reading runs automatically; the manual address/button remain
         # available only through the settings/debug build, not the main UI.
@@ -116,6 +138,9 @@ class TrackerApp(tk.Tk):
         ttk.Button(decks, text="删除牌组", command=self._delete_deck).grid(
             row=0, column=2, padx=(6, 0)
         )
+        ttk.Button(decks, text="清空当前牌组", command=self._clear_deck_selection).grid(
+            row=0, column=3, padx=(6, 0)
+        )
         # Match recording is opt-in and is started manually by the checkbox.
         self.record_matches_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
@@ -123,17 +148,17 @@ class TrackerApp(tk.Tk):
             text="启用对局记录（本地）",
             variable=self.record_matches_var,
             command=self._toggle_match_recording,
-        ).grid(row=0, column=3, padx=(12, 0))
+        ).grid(row=0, column=4, padx=(12, 0))
         ttk.Button(decks, text="对局统计", command=self._show_match_stats).grid(
-            row=0, column=4, padx=(6, 0)
+            row=0, column=5, padx=(6, 0)
         )
         ttk.Button(decks, text="编辑当前卡组", command=self._edit_current_deck).grid(
-            row=0, column=5, padx=(6, 0)
+            row=0, column=6, padx=(6, 0)
         )
         self.overlay_button = ttk.Button(
             decks, text="打开悬浮记牌器", command=self._toggle_overlay
         )
-        self.overlay_button.grid(row=0, column=6, padx=(6, 0))
+        self.overlay_button.grid(row=0, column=7, padx=(6, 0))
 
         active_deck = self._active_saved_deck()
         default_class = class_name(active_deck.class_id) if active_deck else class_name(1)
@@ -270,10 +295,26 @@ class TrackerApp(tk.Tk):
         self.deck_text = self._text_panel(details, "剩余牌库")
         self.field_text = self._text_panel(details, "目前对局")
         self.history_text = self._text_panel(details, "最近记录")
+        self.lethal_text = self._text_panel(details, "斩杀计算（按需）", wrap="word")
+        ttk.Button(
+            root,
+            text="计算本回合斩杀",
+            command=self._calculate_lethal,
+        ).pack(anchor="w", pady=(8, 0))
         self.deck_text.tag_configure("deck_header", font=("Segoe UI", 14, "bold"))
         self.deck_text.tag_configure("deck_section", font=("Segoe UI", 10, "bold"), foreground="#24527a")
         self._refresh_deck_choices()
         self._update_stats_summary()
+
+    def _init_lethal_bridge(self) -> None:
+        """Load the optional LethalCalculator and prime its status panel."""
+        bridge, message = create_lethal_bridge()
+        self._lethal_bridge = bridge
+        self._lethal_status_message = message
+        if bridge is None:
+            self._set_text(self.lethal_text, message)
+        else:
+            self._set_text(self.lethal_text, message + "\n等待对局快照；请点击“计算本回合斩杀”…")
 
     @staticmethod
     def _app_asset_path(name: str) -> Path | None:
@@ -540,14 +581,14 @@ class TrackerApp(tk.Tk):
         )
 
     @staticmethod
-    def _text_panel(parent: ttk.PanedWindow, title: str) -> tk.Text:
+    def _text_panel(parent: ttk.PanedWindow, title: str, *, wrap: str = "none") -> tk.Text:
         frame = ttk.LabelFrame(parent, text=title, padding=5)
         text = tk.Text(
             frame,
             height=16,
             width=30,
             state="disabled",
-            wrap="none",
+            wrap=wrap,
             background="#f6f8fb",
             foreground="#182635",
             insertbackground="#182635",
@@ -787,21 +828,69 @@ class TrackerApp(tk.Tk):
         self._update_stats_summary()
 
     def _drain_events(self) -> None:
+        latest_snapshot: dict[str, object] | None = None
+        status_after_snapshot: str | None = None
+        stale_lethal_result = False
         while True:
             try:
                 kind, value = self._events.get_nowait()
             except queue.Empty:
                 break
             if kind == "error":
-                self.status_var.set(f"读取错误：{value}")
+                message = f"读取错误：{value}"
+                self.status_var.set(message)
+                if latest_snapshot is not None:
+                    status_after_snapshot = message
                 continue
             if kind == "status":
-                self.status_var.set(str(value))
+                message = str(value)
+                self.status_var.set(message)
+                if latest_snapshot is not None:
+                    status_after_snapshot = message
                 continue
             if kind == "deck":
                 self._render_deck_info(value)  # type: ignore[arg-type]
                 continue
-            self._render(value)  # type: ignore[arg-type]
+            if kind == "lethal_view" and isinstance(value, tuple) and len(value) == 2:
+                generation, result = value
+                if isinstance(generation, int):
+                    restart = False
+                    with self._lethal_lock:
+                        current = generation == self._lethal_generation
+                        self._lethal_pending = False
+                        if current:
+                            self._lethal_view = result
+                            self._lethal_view_generation = generation
+                            self._lethal_dirty = False
+                            render_snapshot = self._last_snapshot
+                        else:
+                            render_snapshot = None
+                            restart = self._lethal_restart_requested
+                            self._lethal_restart_requested = False
+                    if current and isinstance(render_snapshot, dict):
+                        self._render_lethal_view(render_snapshot, result)
+                    elif not current and restart:
+                        # A second explicit click arrived while the previous
+                        # search was still running.  Start the requested
+                        # latest search after this stale result is discarded.
+                        stale_lethal_result = True
+                continue
+            if kind == "snapshot" and isinstance(value, dict):
+                # The memory reader can produce several snapshots between UI
+                # ticks.  Rendering only the newest one keeps the window
+                # responsive; lethal search itself is started explicitly by
+                # the user from the latest snapshot.
+                latest_snapshot = value
+                status_after_snapshot = None
+                continue
+            if isinstance(value, dict):
+                latest_snapshot = value
+        if latest_snapshot is not None:
+            self._render(latest_snapshot)
+            if status_after_snapshot is not None:
+                self.status_var.set(status_after_snapshot)
+        if stale_lethal_result and self._last_snapshot is not None:
+            self._calculate_lethal()
         self.after(100, self._drain_events)
 
     @staticmethod
@@ -824,6 +913,7 @@ class TrackerApp(tk.Tk):
         self._render_overlay(snapshot)
         root = snapshot.get("root")
         if not isinstance(root, dict):
+            self._render_lethal(snapshot)
             return
         address = snapshot.get("address")
         if isinstance(address, str):
@@ -831,9 +921,11 @@ class TrackerApp(tk.Tk):
         self.status_var.set("已连接，正在后台读取（不会暂停游戏）")
         players = root.get("players", [])
         if not isinstance(players, (list, tuple)) or len(players) < 2:
+            self._render_lethal(snapshot)
             return
         mine, opponent = players[0], players[1]
         if not isinstance(mine, dict) or not isinstance(opponent, dict):
+            self._render_lethal(snapshot)
             return
         self._update_opponent_probability_inputs(snapshot, opponent)
         self._track_match(snapshot, mine, opponent)
@@ -892,7 +984,10 @@ class TrackerApp(tk.Tk):
                     deck_segments.append(("（暂无）\n", None))
             self._set_rich_text(self.deck_text, deck_segments)
         else:
-            self._set_text(self.deck_text, "请从本地牌组仓库选择牌组")
+            if snapshot.get("battle_mode") == "puzzle":
+                self._set_text(self.deck_text, "特殊/解密对局：当前牌组为空（不使用本地牌库）")
+            else:
+                self._set_text(self.deck_text, "请从本地牌组仓库选择牌组")
         # Keep hand knowledge and other extra information in the upper part;
         # the current board is separated below for quick scanning.
         lines = ["对手手牌："]
@@ -908,6 +1003,283 @@ class TrackerApp(tk.Tk):
         self.class_counter_var.set(self._format_class_counters(snapshot))
         self._set_text(self.field_text, "\n".join(lines))
         self._set_text(self.history_text, self._format_recent_history(mine, opponent))
+        self._render_lethal(snapshot)
+
+    def _render_lethal(self, snapshot: dict[str, object]) -> None:
+        """Record a fresh snapshot without automatically running the solver."""
+        if self._lethal_bridge is None:
+            self._set_text(self.lethal_text, self._lethal_status_message or "斩杀计算器不可用")
+            return
+
+        # A few formatting/unit callers construct ``TrackerApp`` with
+        # ``object.__new__`` and only provide the widgets they exercise. Keep
+        # that supported by retaining a synchronous compatibility path when
+        # the Tk runtime fields have not been initialized.
+        if "_lethal_lock" not in object.__getattribute__(self, "__dict__"):
+            try:
+                view = self._lethal_bridge.refresh(snapshot)
+            except Exception as exc:
+                view = exc
+            self._render_lethal_view(snapshot, view)
+            return
+
+        with self._lethal_lock:
+            self._lethal_generation += 1
+            self._lethal_latest_snapshot = snapshot
+            self._lethal_view = None
+            self._lethal_view_generation = -1
+            self._lethal_dirty = True
+            # A board update invalidates an in-flight result, but must not
+            # trigger another search until the user explicitly clicks.
+            self._lethal_restart_requested = False
+        self._set_text(self.lethal_text, "盘面已更新，请点击“计算本回合斩杀”")
+
+    def _calculate_lethal(self) -> None:
+        """Start one explicit search using the newest tracker snapshot."""
+        if self._lethal_bridge is None:
+            self._set_text(self.lethal_text, self._lethal_status_message or "斩杀计算器不可用")
+            return
+        snapshot = self._last_snapshot
+        if not isinstance(snapshot, dict):
+            self._set_text(self.lethal_text, "等待对局快照；暂时无法计算")
+            return
+        with self._lethal_lock:
+            self._lethal_generation += 1
+            self._lethal_latest_snapshot = snapshot
+            self._lethal_view = None
+            self._lethal_view_generation = -1
+            self._lethal_dirty = False
+            if self._lethal_pending:
+                # Do not run two sessions concurrently.  The current worker
+                # will publish a stale result, after which the requested
+                # calculation is started from the latest snapshot.
+                self._lethal_restart_requested = True
+                should_start = False
+            else:
+                self._lethal_pending = True
+                self._lethal_restart_requested = False
+                should_start = True
+        if should_start:
+            threading.Thread(target=self._lethal_worker, name="lethal-solver", daemon=True).start()
+        self._set_text(self.lethal_text, "斩杀计算中…")
+
+    def _lethal_worker(self) -> None:
+        """Run one serialized solve in a daemon thread, never touching Tk."""
+        with self._lethal_lock:
+            snapshot = self._lethal_latest_snapshot
+            generation = self._lethal_generation
+        if self._lethal_bridge is None or not isinstance(snapshot, dict):
+            result: object = RuntimeError("lethal bridge unavailable")
+        else:
+            try:
+                result = self._lethal_bridge.refresh(snapshot)
+            except Exception as exc:  # optional UI integration must fail closed
+                result = exc
+        self._events.put(("lethal_view", (generation, result)))
+
+    def _render_lethal_view(self, snapshot: dict[str, object], view: object) -> None:
+        """Render a completed solver view.  This method runs on Tk's thread."""
+        if isinstance(view, Exception):
+            self._set_text(
+                self.lethal_text,
+                "状态：INCOMPLETE\n斩杀计算器刷新失败："
+                f"{type(view).__name__}: {view}",
+            )
+            return
+
+        status = str(getattr(view, "status", "INCOMPLETE"))
+        status_labels = {
+            "CONFIRMED": "确认斩杀",
+            "PROBABILISTIC": "概率斩杀",
+            "NO_LETHAL": "本回合无法斩杀",
+            "INCOMPLETE": "计算不完整",
+        }
+        lines = [f"状态：{status_labels.get(status, status)} ({status})"]
+        trusted = bool(getattr(view, "trusted", False))
+        usable = bool(getattr(view, "usable", False))
+        ally_turn = bool(getattr(view, "is_ally_turn", False))
+        lines.append(
+            f"快照：{'可信' if trusted else '不可信'}    "
+            f"可计算：{'是' if usable else '否'}    "
+            f"回合：{'我方' if ally_turn else '对手'}"
+        )
+
+        state = getattr(view, "state", None)
+        if state is not None:
+            def _state_int(name: str, fallback: object = "?") -> object:
+                value = getattr(state, name, fallback)
+                return value if isinstance(value, int) and not isinstance(value, bool) else fallback
+
+            def _state_count(name: str) -> int:
+                value = getattr(state, name, ())
+                return len(value) if isinstance(value, (list, tuple, set, dict)) else 0
+
+            lines.append(f"对手当前生命：{_state_int('enemy_hp')}")
+            lines.append(
+                "资源："
+                f"PP {_state_int('pp')}/{_state_int('max_pp')}"
+                f" (+{_state_int('extra_pp', 0)} Extra)；"
+                f"EP {_state_int('ep')} / SEP {_state_int('sep')}；"
+                f"Rally {_state_int('rally', 0)}；"
+                f"PlayCount {_state_int('play_count', 0)}；"
+                f"墓地 {_state_int('cemetery', 0)}；"
+                f"觉醒 {'是' if bool(getattr(state, 'is_awakening', False)) else '否'}；"
+                f"本回合已攻击 {_state_count('attacked_card_uids')}"
+            )
+            unlocks = []
+            evolve_turn = getattr(state, "evolve_turn", None)
+            super_evolve_turn = getattr(state, "super_evolve_turn", None)
+            current_turn = getattr(state, "turn_number", None)
+            if isinstance(evolve_turn, int) and not isinstance(evolve_turn, bool):
+                suffix = (
+                    "未知"
+                    if not isinstance(current_turn, int) or isinstance(current_turn, bool)
+                    else ("已解锁" if current_turn >= evolve_turn else "未解锁")
+                )
+                unlocks.append(f"进化 T{evolve_turn}（{suffix}）")
+            if isinstance(super_evolve_turn, int) and not isinstance(super_evolve_turn, bool):
+                suffix = (
+                    "未知"
+                    if not isinstance(current_turn, int) or isinstance(current_turn, bool)
+                    else ("已解锁" if current_turn >= super_evolve_turn else "未解锁")
+                )
+                unlocks.append(f"超进化 T{super_evolve_turn}（{suffix}）")
+            if unlocks:
+                lines.append("解锁限制：" + "；".join(unlocks))
+            crest_instances = getattr(state, "crest_instances", ()) or ()
+            active_crests = getattr(state, "active_crests", ()) or ()
+            crest_instance_count = _state_count("crest_instances")
+            crest_count = crest_instance_count if crest_instance_count else (
+                len(active_crests) if isinstance(active_crests, (list, tuple, set)) else _state_int("active_crests", 0)
+            )
+            lines.append(
+                "额外资源："
+                f"Faith {_state_int('faith', 0)}"
+                f"（{_state_count('faith_instances')}实例）；"
+                f"Crest {crest_count}"
+                f"（{crest_instance_count}实例）；"
+                f"土之印 {_state_int('earth_sigil', 0)}；"
+                f"奥义 {_state_int('skybound_art', 0)}"
+                f"/解放 {_state_int('super_skybound_art', 0)}；"
+                f"毁坏池 {_state_count('destroyed_this_match')}"
+            )
+            faith_details = getattr(state, "faith_instances", ()) or ()
+            if isinstance(faith_details, (list, tuple)) and faith_details:
+                rendered_faith = []
+                for item in faith_details:
+                    if isinstance(item, dict):
+                        source = item.get("source_card_id") or item.get("unique_id") or "?"
+                        rendered_faith.append(f"{source}={item.get('value', 0)}")
+                if rendered_faith:
+                    lines.append("Faith实例：" + "、".join(rendered_faith))
+            if isinstance(crest_instances, (list, tuple)) and crest_instances:
+                rendered_crests = []
+                for item in crest_instances:
+                    if isinstance(item, dict):
+                        identity = item.get("unique_id") or item.get("card_id") or "?"
+                        countdown = item.get("countdown")
+                        rendered_crests.append(f"{identity}({countdown if countdown is not None else '∞'})")
+                if rendered_crests:
+                    lines.append("Crest实例：" + "、".join(rendered_crests))
+
+        probability = getattr(view, "probability", 0.0)
+        try:
+            probability_value = max(0.0, min(1.0, float(probability)))
+        except (TypeError, ValueError):
+            probability_value = 0.0
+        if status == "PROBABILISTIC" or probability_value > 0.0:
+            lines.append(f"斩杀概率：{probability_value * 100:.2f}%")
+
+        if status in {"NO_LETHAL", "INCOMPLETE"}:
+            if usable:
+                max_damage = getattr(view, "max_damage", 0)
+                try:
+                    max_damage_value = max(0, int(max_damage))
+                except (TypeError, ValueError):
+                    max_damage_value = 0
+                qualifier = "当前回合最高理论伤害"
+                if status == "INCOMPLETE":
+                    qualifier = "当前已知最高理论伤害（结果不完整）"
+                suffix = ""
+                enemy_hp = getattr(state, "enemy_hp", None)
+                if isinstance(enemy_hp, int) and not isinstance(enemy_hp, bool):
+                    suffix = f"（预计剩余生命 {max(0, enemy_hp - max_damage_value)}）"
+                lines.append(f"{qualifier}：{max_damage_value} 点{suffix}")
+                max_sequence = tuple(getattr(view, "max_damage_sequence", ()) or ())
+                if max_sequence:
+                    lines.append("最高伤害路线：")
+                    lines.extend(f"  {index}. {step}" for index, step in enumerate(max_sequence, 1))
+            else:
+                lines.append("最高伤害：无法计算（快照缺少关键字段）")
+
+        sequence = tuple(getattr(view, "sequence", ()) or ())
+        if sequence and status in {"CONFIRMED", "PROBABILISTIC", "INCOMPLETE"}:
+            lines.append("斩杀路线：")
+            lines.extend(f"  {index}. {step}" for index, step in enumerate(sequence, 1))
+
+        # Show the live legality projections so the user can verify why an
+        # action/target is or is not considered by the solver.
+        entity_names: dict[int, str] = {}
+        if state is not None:
+            for collection_name in ("hand", "my_board", "enemy_board"):
+                collection = getattr(state, collection_name, ()) or ()
+                if not isinstance(collection, (list, tuple, set)):
+                    continue
+                for entity in collection:
+                    uid = getattr(entity, "unique_id", None)
+                    if isinstance(uid, int):
+                        name = getattr(entity, "name", None)
+                        card_id = getattr(entity, "card_id", None)
+                        entity_names[uid] = str(name or self._card_label(card_id))
+            leader_uid = getattr(state, "enemy_leader_uid", None)
+            if isinstance(leader_uid, int):
+                entity_names[leader_uid] = "对手主战者"
+
+        modes = getattr(view, "available_modes", {})
+        if isinstance(modes, dict) and modes:
+            lines.append("可用模式：")
+            for uid, values in sorted(modes.items(), key=lambda item: str(item[0])):
+                raw_values = values if isinstance(values, (list, tuple, set)) else ()
+                mode_values = tuple(str(value) for value in raw_values)
+                if mode_values:
+                    label = entity_names.get(int(uid), str(uid)) if str(uid).lstrip('-').isdigit() else str(uid)
+                    lines.append(f"  {label} [{uid}]：{'、'.join(mode_values)}")
+        attack_targets = getattr(view, "attack_targets", {})
+        if isinstance(attack_targets, dict) and attack_targets:
+            lines.append("AttackTargets：")
+            for uid, values in sorted(attack_targets.items(), key=lambda item: str(item[0])):
+                raw_values = values if isinstance(values, (list, tuple, set)) else ()
+                rendered_values = [
+                    f"{entity_names.get(value, value)} [{value}]" if isinstance(value, int) else str(value)
+                    for value in raw_values
+                ]
+                rendered = "、".join(rendered_values) or "（无）"
+                attacker = entity_names.get(int(uid), str(uid)) if str(uid).lstrip('-').isdigit() else str(uid)
+                lines.append(f"  {attacker} [{uid}] → {rendered}")
+
+        legal_actions = getattr(view, "legal_actions", None)
+        if isinstance(legal_actions, dict):
+            populated = []
+            for action, values in legal_actions.items():
+                if isinstance(values, (list, tuple, set)) and values:
+                    populated.append(f"{action}={len(values)}")
+                elif action in {"can_attack_leader_cards", "can_attack_field_cards"} and isinstance(values, (list, tuple, set)):
+                    # Explicit zeroes make it clear that an attack was
+                    # checked and found illegal, rather than omitted from
+                    # the snapshot or the UI.
+                    populated.append(f"{action}=0")
+            if populated:
+                lines.append("合法操作：" + "；".join(sorted(populated)))
+
+        reasons = tuple(getattr(view, "trust_reasons", ()) or ())
+        warnings = tuple(getattr(view, "warnings", ()) or ())
+        if reasons:
+            lines.append("快照原因：")
+            lines.extend(f"  - {reason}" for reason in reasons)
+        if warnings:
+            lines.append("提示：")
+            lines.extend(f"  - {warning}" for warning in warnings)
+        self._set_text(self.lethal_text, "\n".join(lines))
 
     @staticmethod
     def _has_terminal_result(mine: dict[str, object], opponent: dict[str, object]) -> bool:
@@ -924,6 +1296,16 @@ class TrackerApp(tk.Tk):
     def _clear_completed_match_display(self) -> None:
         """Immediately remove finished-match data while keeping saved results."""
         self._last_snapshot = None
+        if "_lethal_lock" in object.__getattribute__(self, "__dict__"):
+            with self._lethal_lock:
+                # Invalidate a solve that may still be running.  Its result
+                # will be ignored by the generation check in _drain_events.
+                self._lethal_generation += 1
+                self._lethal_latest_snapshot = None
+                self._lethal_view = None
+                self._lethal_view_generation = -1
+                self._lethal_restart_requested = False
+                self._lethal_dirty = True
         self._opponent_known_hand.reset()
         self.status_var.set("本局已结束，等待下一局")
         self.summary_var.set("本局已结束，等待下一局数据")
@@ -937,6 +1319,10 @@ class TrackerApp(tk.Tk):
         self._render_active_deck_full()
         self._set_text(self.field_text, "等待下一局")
         self._set_text(self.history_text, "等待下一局")
+        if self._lethal_bridge is None:
+            self._set_text(self.lethal_text, self._lethal_status_message or "等待下一局")
+        else:
+            self._set_text(self.lethal_text, "本局已结束，等待下一局快照")
         self._render_overlay(None)
 
     def _track_match(
@@ -1364,6 +1750,21 @@ class TrackerApp(tk.Tk):
             self._service.set_selected_deck(deck.to_snapshot(), deck.key)
         self._update_stats_summary()
 
+    def _clear_deck_selection(self) -> None:
+        """Detach the local deck ledger without deleting saved deck data."""
+        try:
+            self._repository.clear_selection()
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("清空失败", str(exc), parent=self)
+            return
+        self._match_id = None
+        self._match_deck_key = None
+        self._refresh_deck_choices()
+        self.deck_status_var.set("已清空当前牌组；特殊/解密对局将不使用本地牌库")
+        if self._service and self._service.running:
+            self._service.set_selected_deck(None, None)
+        self._update_stats_summary()
+
     def _import_deck(self) -> None:
         raw = self.deck_url_var.get().strip()
         if not raw:
@@ -1468,14 +1869,87 @@ class TrackerApp(tk.Tk):
         self._update_stats_summary()
 
     @staticmethod
+    @lru_cache(maxsize=1)
+    def _runtime_keyword_rules() -> dict[str, object]:
+        """Load the optional local static-keyword index for field display."""
+        path = Path(__file__).resolve().parent / "data" / "card_rules.json"
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _field_static_keywords(card_id: object) -> set[str]:
+        if not isinstance(card_id, int) or card_id <= 0:
+            return set()
+        rules = TrackerApp._runtime_keyword_rules()
+        entry = rules.get(str(canonical_card_id(card_id)), {})
+        if not isinstance(entry, dict):
+            return set()
+        static = entry.get("static", {})
+        if not isinstance(static, dict):
+            return set()
+        result: set[str] = set()
+        if static.get("has_storm"):
+            result.add("疾驰")
+        if static.get("has_rush"):
+            result.add("突进")
+        return result
+
+    @staticmethod
     def _format_field(cards: object) -> list[str]:
         if not isinstance(cards, (list, tuple)):
             return []
-        return [
-            f"{TrackerApp._format_card_line(card)}  "
-            f"{card.get('attack')}/{card.get('life')}  进化={card.get('evolve_state')}"
-            for card in cards if isinstance(card, dict)
-        ]
+        lines: list[str] = []
+        keyword_flags = (
+            ("has_storm", "疾驰"),
+            ("has_rush", "突进"),
+            ("has_guard", "守护"),
+            ("has_last_word", "谢幕曲"),
+            ("has_sneak", "潜行"),
+            ("has_cant_be_attacked", "无法被攻击"),
+            ("has_cant_select", "无法被选中为目标"),
+            ("has_killer", "必杀"),
+            ("has_bane", "必杀"),
+            ("has_drain", "虹吸"),
+            ("has_cant_attack", "无法攻击"),
+        )
+        for card in cards:
+            if not isinstance(card, dict):
+                continue
+            card_type = card.get("card_type", card.get("type"))
+            try:
+                is_amulet = int(card_type) in (2, 3)
+            except (TypeError, ValueError):
+                is_amulet = str(card_type).casefold() in {"amulet", "countdown_amulet"}
+            if is_amulet:
+                countdown = card.get("countdown", card.get("remaining_countdown"))
+                counter = f"倒数={countdown}" if isinstance(countdown, int) and countdown >= 0 else "倒数=?"
+                line = f"{TrackerApp._format_card_line(card)}  护符  {counter}"
+            else:
+                line = (
+                    f"{TrackerApp._format_card_line(card)}  "
+                    f"{card.get('attack')}/{card.get('life')}  进化={card.get('evolve_state')}"
+                )
+            keywords = TrackerApp._field_static_keywords(card.get("card_id"))
+            for key, label in keyword_flags:
+                if card.get(key):
+                    keywords.add(label)
+            buff = card.get("buff")
+            if isinstance(buff, dict):
+                if buff.get("quick"):
+                    keywords.add("突进")
+                if buff.get("rush"):
+                    keywords.add("疾驰")
+            statuses = card.get("statuses", card.get("keywords"))
+            if isinstance(statuses, (list, tuple, set)):
+                aliases = {"storm": "疾驰", "rush": "突进", "ward": "守护", "bane": "必杀", "ambush": "潜行", "last_words": "谢幕曲"}
+                keywords.update(aliases.get(str(item).casefold(), str(item)) for item in statuses)
+            if keywords:
+                line += "  【" + "】【".join(sorted(keywords)) + "】"
+            lines.append(line)
+        return lines
 
     @staticmethod
     def _format_recent_history(mine: dict[str, object], opponent: dict[str, object]) -> str:

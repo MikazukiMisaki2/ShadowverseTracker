@@ -9,7 +9,11 @@ import unittest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from shadowverse_tracker.memory.battle import read_battle_root, read_battle_view_server_data
+from shadowverse_tracker.memory.battle import (
+    read_battle_root,
+    read_battle_root_legal_actions,
+    read_battle_view_server_data,
+)
 
 
 class FakeReader:
@@ -99,6 +103,39 @@ class FakeReader:
 
 
 class BattleDecoderTests(unittest.TestCase):
+    def test_decodes_root_embedded_legal_actions_for_puzzle_mode(self) -> None:
+        memory = FakeReader()
+        root = 0x1000
+        can_play, can_leader, can_field, target_map = 0x2000, 0x2100, 0x2200, 0x2300
+        evolve, super_evolve, enhance = 0x2400, 0x2500, 0x2600
+        for offset, address, values in (
+            (0x20, can_play, (11, 12)),
+            (0x28, can_leader, (31,)),
+            (0x30, can_field, (32,)),
+            (0x40, evolve, (32,)),
+            (0x48, super_evolve, ()),
+        ):
+            memory.write(root + offset, "<Q", address)
+            memory.write_i32_hash_set(address, address + 0x1000, values)
+        memory.write(root + 0x38, "<Q", target_map)
+        target_slots, target_values = 0x2700, 0x2A00
+        memory.write_i32_hash_set(target_values, target_slots, (99,))
+        memory.write_i32_hash_set_dictionary(target_map, target_slots + 0x100, ((32, target_values),))
+        memory.write(root + 0x58, "<Q", enhance)
+        enhance_entries = 0x2900
+        memory.write(enhance + 0x18, "<Q", enhance_entries)
+        memory.write(enhance + 0x20, "<i", 1)
+        memory.write(enhance_entries + 0x18, "<Q", 1)
+        memory.write(enhance_entries + 0x20, "<iiiIQ", 1, -1, 12, 0, 0)
+
+        result = read_battle_root_legal_actions(memory, root)
+
+        self.assertEqual(result["can_play_cards"], (11, 12))
+        self.assertEqual(result["can_attack_leader_cards"], (31,))
+        self.assertEqual(result["can_attack_field_cards"], (32,))
+        self.assertEqual(result["attack_targets"], {32: (99,)})
+        self.assertEqual(result["can_enhance_play_cards"], (12,))
+
     def test_decodes_root_players_and_list_backed_hand(self) -> None:
         memory = FakeReader()
         root, players_array = 0x1000, 0x2000

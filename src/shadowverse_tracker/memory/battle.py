@@ -454,6 +454,90 @@ def _read_i32_hash_set_dictionary(
     return result
 
 
+def _read_i32_dictionary_keys(
+    reader: MemoryReader,
+    address: int,
+    *,
+    maximum: int = MAX_LEGAL_ACTION_CARDS,
+) -> tuple[int, ...]:
+    """Read keys from a ``Dictionary<int, TValue>``.
+
+    Several ``BattleRootMpo`` legality projections are dictionaries whose
+    values contain mode/cost metadata.  The action contract only needs the
+    card UIDs, so decoding the keys avoids making assumptions about the value
+    type while still validating the managed dictionary layout.
+    """
+    if not address:
+        return ()
+    entries = reader.read_u64(address + 0x18)
+    count = reader.read_i32(address + 0x20)
+    if count < 0 or count > maximum:
+        raise ValueError(f"implausible dictionary count {count} at 0x{address:X}")
+    if not entries or count == 0:
+        return ()
+    capacity = reader.read_u64(entries + 0x18)
+    if capacity < count or capacity > maximum:
+        raise ValueError(f"implausible dictionary capacity {capacity} at 0x{entries:X}")
+    result: list[int] = []
+    for index in range(count):
+        entry = entries + 0x20 + index * 0x18
+        if reader.read_i32(entry) < 0:
+            continue
+        result.append(reader.read_i32(entry + 0x08))
+    return tuple(result)
+
+
+def read_battle_root_legal_actions(reader: MemoryReader, address: int) -> dict[str, object]:
+    """Decode legality projections embedded in ``BattleRootMpo``.
+
+    The regular ``BattleViewServerData`` object is not created in puzzle /
+    teaching battles, but the root carries the same projections.  Offsets are
+    the fields of the current ``BattleRootMpo`` layout and are intentionally
+    kept in one place so a version change fails closed in the caller.
+    """
+    if not address:
+        raise ValueError("null BattleRootMpo")
+
+    # These six projections are present even when empty in a live root.  A
+    # null pointer here means the object layout is not the expected version;
+    # fail closed so SnapshotAdapter keeps the result INCOMPLETE.
+    required_offsets = (0x20, 0x28, 0x30, 0x38, 0x40, 0x48)
+    if any(reader.read_u64(address + offset) == 0 for offset in required_offsets):
+        raise ValueError("BattleRootMpo legality fields are unavailable")
+
+    def hash_set(offset: int) -> tuple[int, ...]:
+        return _read_i32_hash_set(reader, reader.read_u64(address + offset))
+
+    def dictionary_keys(offset: int) -> tuple[int, ...]:
+        return _read_i32_dictionary_keys(reader, reader.read_u64(address + offset))
+
+    return {
+        "can_play_cards": hash_set(0x20),
+        # Root does not expose the extra-PP projection separately.
+        "can_play_cards_with_extra_pp": (),
+        "can_attack_leader_cards": hash_set(0x28),
+        "can_attack_field_cards": hash_set(0x30),
+        "attack_targets": _read_i32_hash_set_dictionary(reader, reader.read_u64(address + 0x38)),
+        "can_evolve_cards": hash_set(0x40),
+        "can_super_evolve_cards": hash_set(0x48),
+        "can_super_evolve_with_skill_cards": hash_set(0x70),
+        "can_enhance_play_cards": dictionary_keys(0x58),
+        "can_activation_field_cards": dictionary_keys(0x60),
+        "can_activation_field_cards_with_extra_pp": (),
+        "has_activation_field_cards": (),
+        "can_mode_skill_cards": hash_set(0x68),
+        "super_evolve_can_mode_skill_cards": hash_set(0x70),
+        "can_accelerate_play_cards": dictionary_keys(0x78),
+        "can_crystal_play_cards": dictionary_keys(0x80),
+        "can_fusion_cards": hash_set(0x88),
+        "has_fusion_hand_cards": hash_set(0x90),
+        "can_special_action_field_cards": hash_set(0x98),
+        "can_special_action_area_cards": hash_set(0xA0),
+        "can_special_action_in_battle": hash_set(0xA8),
+        "source": "BattleRootMpo",
+    }
+
+
 def read_battle_view_server_data(reader: MemoryReader, address: int) -> LegalActions:
     """Read client-derived legal actions for the current local-player state."""
     if not address:
@@ -1101,4 +1185,76 @@ def read_battle_model(
         "root": public_root,
         "legal_actions": legal_actions_dict,
         "events": events,
+    }
+
+
+def read_battle_root_snapshot(
+    reader: MemoryReader,
+    address: int,
+    *,
+    reveal_opponent_hand: bool = False,
+) -> dict[str, object]:
+    """Build the public snapshot envelope directly from a BattleRootMpo.
+
+    Puzzle/teaching battles can keep a valid root while exposing no regular
+    ``BattleModel`` instance.  The root still carries the server's legality
+    projections, so decode those directly.  Ancillary class ids and response
+    events remain unknown; the adapter only trusts fields it can validate.
+    """
+    root = read_battle_root(reader, address)
+    try:
+        legal_actions: dict[str, object] | None = read_battle_root_legal_actions(reader, address)
+    except (OSError, ValueError):
+        legal_actions = None
+    public_root = root.to_public_dict(reveal_opponent_hand=reveal_opponent_hand)
+    # The root-level target map is authoritative in puzzle mode.  Project it
+    # onto field cards as well, matching the regular BattleModel reader and
+    # keeping the UI/adapter views identical.
+    if isinstance(public_root, dict) and isinstance(legal_actions, dict):
+        players = public_root.get("players")
+        if isinstance(players, (list, tuple)) and players:
+            mine = players[0] if isinstance(players[0], dict) else None
+            opponent = players[1] if len(players) > 1 and isinstance(players[1], dict) else None
+            hand = mine.get("hand", ()) if isinstance(mine, dict) else ()
+            field = mine.get("field", ()) if isinstance(mine, dict) else ()
+            enemy_field = opponent.get("field", ()) if isinstance(opponent, dict) else ()
+            hand_ids = {int(card["unique_id"]) for card in hand if isinstance(card, dict) and isinstance(card.get("unique_id"), int)}
+            field_ids = {int(card["unique_id"]) for card in field if isinstance(card, dict) and isinstance(card.get("unique_id"), int)}
+            target_ids = {int(card["unique_id"]) for card in enemy_field if isinstance(card, dict) and isinstance(card.get("unique_id"), int)}
+            if isinstance(opponent, dict) and isinstance(opponent.get("unique_id"), int):
+                target_ids.add(int(opponent["unique_id"]))
+            hand_keys = ("can_play_cards", "can_play_cards_with_extra_pp", "can_enhance_play_cards", "can_accelerate_play_cards", "can_crystal_play_cards", "can_fusion_cards", "has_fusion_hand_cards")
+            field_keys = ("can_attack_leader_cards", "can_attack_field_cards", "attacked_cards", "can_activation_field_cards", "can_activation_field_cards_with_extra_pp", "has_activation_field_cards", "can_evolve_cards", "can_super_evolve_cards", "can_super_evolve_with_skill_cards", "can_special_action_field_cards")
+            for key in hand_keys:
+                legal_actions[key] = tuple(value for value in legal_actions.get(key, ()) if value in hand_ids)
+            for key in field_keys:
+                legal_actions[key] = tuple(value for value in legal_actions.get(key, ()) if value in field_ids)
+            raw_target_map = legal_actions.get("attack_targets", {})
+            legal_actions["attack_targets"] = {
+                int(attacker): tuple(target for target in targets if target in target_ids)
+                for attacker, targets in raw_target_map.items()
+                if int(attacker) in field_ids
+            } if isinstance(raw_target_map, dict) else {}
+            if isinstance(mine, dict) and isinstance(mine.get("field"), (list, tuple)):
+                target_map = legal_actions.get("attack_targets", {})
+                leader_ids = set(legal_actions.get("can_attack_leader_cards", ()))
+                field_ids = set(legal_actions.get("can_attack_field_cards", ()))
+                attacked_ids = set(legal_actions.get("attacked_cards", ()))
+                for card in mine["field"]:
+                    if not isinstance(card, dict) or not isinstance(card.get("unique_id"), int):
+                        continue
+                    uid = int(card["unique_id"])
+                    card["attack_targets"] = target_map.get(uid, ()) if isinstance(target_map, dict) else ()
+                    card["can_attack_leader"] = uid in leader_ids
+                    card["can_attack_field"] = uid in field_ids
+                    card["has_attacked"] = uid in attacked_ids
+    return {
+        "address": f"0x{address:016X}",
+        "self_class_id": None,
+        "opponent_class_id": None,
+        "deck_format": None,
+        "battle_mode": "puzzle",
+        "root": public_root,
+        "legal_actions": legal_actions,
+        "events": [],
     }

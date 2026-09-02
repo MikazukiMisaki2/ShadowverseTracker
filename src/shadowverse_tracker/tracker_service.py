@@ -16,9 +16,9 @@ import time
 from typing import Callable
 
 from .deck_ledger import DeckLedger
-from .memory.battle import read_battle_model
+from .memory.battle import read_battle_model, read_battle_root_snapshot
 from .memory.deck import DeckInfoSnapshot
-from .memory.discovery import find_battle_models, find_battle_view_server_data
+from .memory.discovery import find_battle_models, find_battle_roots, find_battle_view_server_data
 from .memory.win32 import ProcessReader, find_process
 from .opponent_hand import OpponentKnownHand
 from .card_catalog import canonical_card_id
@@ -48,6 +48,8 @@ def without_addresses(value: object) -> object:
         }
     if isinstance(value, list):
         return [without_addresses(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(without_addresses(item) for item in value)
     return value
 
 
@@ -76,6 +78,8 @@ class TrackerService:
         self._output_handle = None
         self._pid: int | None = None
         self._model_address = config.model_address
+        self._battle_root_address = 0
+        self._root_only_mode = False
         self._battle_view_server_data_address = 0
         self._server_data_discovery_attempted = False
         self._server_data_next_retry_at = 0.0
@@ -150,6 +154,13 @@ class TrackerService:
             return
         semantic = without_addresses({
             "root": root,
+            # LegalActions is not duplicated in the BattleRoot object.  It
+            # changes when PP/EP, mode availability, attack targets, or
+            # activation legality changes, so omitting it would suppress the
+            # very refreshes the lethal calculator needs between otherwise
+            # identical board snapshots.
+            "legal_actions": snapshot.get("legal_actions"),
+            "current_turn": snapshot.get("current_turn"),
             "deck_ledger": snapshot.get("deck_ledger"),
             "opponent_hand_knowledge": snapshot.get("opponent_hand_knowledge"),
             "training_observation": snapshot.get("training_observation"),
@@ -615,7 +626,7 @@ class TrackerService:
                             self.on_status(f"版本 {profile.game_version} 校验通过")
                     consecutive_errors = 0
                     while not self._stop.is_set():
-                        if self._model_address <= 0:
+                        if self._model_address <= 0 and not self._root_only_mode:
                             if self.on_status:
                                 self.on_status("正在自动寻找对局对象…")
                             models = find_battle_models(
@@ -623,25 +634,54 @@ class TrackerService:
                                 class_pointer_rva=profile.battle_model_class_pointer_rva,
                             )
                             if not models:
+                                # Puzzle/teaching battles expose a valid
+                                # BattleRootMpo through BattlePuzzleModel but
+                                # do not create the normal BattleModel object.
+                                # Fall back to the shared root so the UI can
+                                # still display a trustworthy board snapshot.
+                                roots = find_battle_roots(reader)
+                                if roots:
+                                    self._battle_root_address = roots[-1]
+                                    self._root_only_mode = True
+                                    self._previous = None
+                                    if self.on_status:
+                                        self.on_status(
+                                            f"已连接解密/教学对局根对象 0x{self._battle_root_address:X}"
+                                        )
+                                else:
+                                    if self.on_status:
+                                        self.on_status("尚未进入对局，等待后自动重试")
+                                    self._stop.wait(2.0)
+                                    continue
+                            else:
+                                self._model_address = models[-1]
+                                self._battle_root_address = 0
+                                self._root_only_mode = False
+                                self._battle_view_server_data_address = 0
+                                self._server_data_discovery_attempted = False
+                                self._server_data_next_retry_at = 0.0
+                                self._previous = None
+                                with self._deck_lock:
+                                    self._ledger = (
+                                        DeckLedger(self._selected_deck) if self._selected_deck else None
+                                    )
+                                    self._opponent_known_hand.reset()
+                                    self._last_turn = None
+                                    self._last_result_code = None
                                 if self.on_status:
-                                    self.on_status("尚未进入对局，等待后自动重试")
-                                self._stop.wait(2.0)
-                                continue
-                            self._model_address = models[-1]
-                            self._battle_view_server_data_address = 0
-                            self._server_data_discovery_attempted = False
-                            self._server_data_next_retry_at = 0.0
-                            self._previous = None
-                            with self._deck_lock:
-                                self._ledger = (
-                                    DeckLedger(self._selected_deck) if self._selected_deck else None
-                                )
-                                self._opponent_known_hand.reset()
-                                self._last_turn = None
-                                self._last_result_code = None
-                            if self.on_status:
-                                self.on_status(f"已自动连接 0x{self._model_address:X}")
+                                    self.on_status(f"已自动连接 0x{self._model_address:X}")
                         try:
+                            if self._root_only_mode:
+                                snapshot = read_battle_root_snapshot(
+                                    reader,
+                                    self._battle_root_address,
+                                    reveal_opponent_hand=self.config.reveal_opponent_hand,
+                                )
+                                self._attach_deck_state(snapshot)
+                                self._emit(snapshot)
+                                consecutive_errors = 0
+                                self._stop.wait(self.config.interval)
+                                continue
                             if (
                                 not self._server_data_discovery_attempted
                                 and time.monotonic() >= self._server_data_next_retry_at
@@ -686,6 +726,8 @@ class TrackerService:
                                 self.on_error(exc)
                             if self.config.model_address <= 0 and consecutive_errors >= 4:
                                 self._model_address = 0
+                                self._battle_root_address = 0
+                                self._root_only_mode = False
                                 self._battle_view_server_data_address = 0
                                 self._server_data_discovery_attempted = False
                                 self._server_data_next_retry_at = 0.0
@@ -695,6 +737,8 @@ class TrackerService:
                 if self.on_status:
                     self.on_status(f"等待游戏启动或重新连接：{exc}")
                 self._model_address = 0 if self.config.model_address <= 0 else self.config.model_address
+                self._battle_root_address = 0
+                self._root_only_mode = False
                 self._battle_view_server_data_address = 0
                 self._server_data_discovery_attempted = False
                 self._server_data_next_retry_at = 0.0
