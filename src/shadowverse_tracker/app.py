@@ -35,7 +35,6 @@ from .official_deck import OfficialDeck, OfficialDeckError, import_deck_code, pa
 from .match_history import CLASS_NAMES, MatchHistory, MatchRecord, class_name, result_label, terminal_match_id
 from .opponent_hand import UNKNOWN_CARD_TYPE_LABELS, OpponentKnownHand
 from .opponent_key_probability import calculate_key_probability
-from .lethal_bridge import LethalBridge, create_lethal_bridge
 from .tracker_service import TrackerConfig, TrackerService
 
 
@@ -70,22 +69,6 @@ class TrackerApp(tk.Tk):
         self._deck_choice_keys: list[str] = []
         self._opponent_known_hand = OpponentKnownHand()
         self._last_snapshot: dict[str, object] | None = None
-        # The calculator is an optional sibling checkout.  Keeping the bridge
-        # nullable means the tracker remains useful when the solver/catalog
-        # is not installed or its generated data is temporarily malformed.
-        self._lethal_bridge: LethalBridge | None = None
-        self._lethal_status_message = ""
-        # Lethal search can take hundreds of milliseconds for a busy hand.
-        # Keep it off Tk's event thread and discard results for superseded
-        # snapshots so an older calculation can never overwrite the board.
-        self._lethal_lock = threading.Lock()
-        self._lethal_generation = 0
-        self._lethal_pending = False
-        self._lethal_restart_requested = False
-        self._lethal_dirty = True
-        self._lethal_latest_snapshot: dict[str, object] | None = None
-        self._lethal_view: object | None = None
-        self._lethal_view_generation = -1
         self._overlay: tk.Toplevel | None = None
         self._overlay_canvas: tk.Canvas | None = None
         self._overlay_drag_origin: tuple[int, int] | None = None
@@ -94,7 +77,6 @@ class TrackerApp(tk.Tk):
         self._card_image_paths: dict[int, Path | None] = {}
         self._card_image_roots = self._find_card_image_roots()
         self._build_ui(args)
-        self._init_lethal_bridge()
         self.after(100, self._drain_events)
         # Reading runs automatically; the manual address/button remain
         # available only through the settings/debug build, not the main UI.
@@ -145,7 +127,7 @@ class TrackerApp(tk.Tk):
         self.record_matches_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             decks,
-            text="启用对局记录（本地）",
+            text="启用胜负统计（本地）",
             variable=self.record_matches_var,
             command=self._toggle_match_recording,
         ).grid(row=0, column=4, padx=(12, 0))
@@ -295,26 +277,10 @@ class TrackerApp(tk.Tk):
         self.deck_text = self._text_panel(details, "剩余牌库")
         self.field_text = self._text_panel(details, "目前对局")
         self.history_text = self._text_panel(details, "最近记录")
-        self.lethal_text = self._text_panel(details, "斩杀计算（按需）", wrap="word")
-        ttk.Button(
-            root,
-            text="计算本回合斩杀",
-            command=self._calculate_lethal,
-        ).pack(anchor="w", pady=(8, 0))
         self.deck_text.tag_configure("deck_header", font=("Segoe UI", 14, "bold"))
         self.deck_text.tag_configure("deck_section", font=("Segoe UI", 10, "bold"), foreground="#24527a")
         self._refresh_deck_choices()
         self._update_stats_summary()
-
-    def _init_lethal_bridge(self) -> None:
-        """Load the optional LethalCalculator and prime its status panel."""
-        bridge, message = create_lethal_bridge()
-        self._lethal_bridge = bridge
-        self._lethal_status_message = message
-        if bridge is None:
-            self._set_text(self.lethal_text, message)
-        else:
-            self._set_text(self.lethal_text, message + "\n等待对局快照；请点击“计算本回合斩杀”…")
 
     @staticmethod
     def _app_asset_path(name: str) -> Path | None:
@@ -476,7 +442,9 @@ class TrackerApp(tk.Tk):
         text = "#172536"
         muted = "#40576d"
         canvas.create_rectangle(8, 8, width - 8, height - 8, fill=panel, outline=border, width=1)
-        canvas.create_text(20, 16, anchor="nw", text=self._overlay_win_rate_summary(), fill=text, font=("Segoe UI", 10, "bold"))
+        # Keep the three win-rate values and their game counts on one compact
+        # line even at the default narrow overlay width.
+        canvas.create_text(20, 16, anchor="nw", text=self._overlay_win_rate_summary(), fill=text, font=("Segoe UI", 8, "bold"))
         if not isinstance(snapshot, dict):
             active = self._active_saved_deck()
             if active is None:
@@ -659,6 +627,21 @@ class TrackerApp(tk.Tk):
                 # before the local response overwrites it.
                 interval=0.05,
                 output_path=Path("logs") / "app_session.jsonl",
+                training_output_path=Path("logs") / "training_matches.jsonl",
+                training_upload_queue_path=(
+                    Path("logs") / "training_upload_queue.jsonl"
+                    if os.environ.get("SHADOWVERSE_TRACKER_UPLOAD_URL")
+                    else None
+                ),
+                training_upload_url=os.environ.get("SHADOWVERSE_TRACKER_UPLOAD_URL"),
+                training_upload_enabled=os.environ.get(
+                    "SHADOWVERSE_TRACKER_UPLOAD_ENABLED", ""
+                ).strip().casefold() in {"1", "true", "yes", "on"},
+                training_upload_token=os.environ.get("SHADOWVERSE_TRACKER_UPLOAD_TOKEN"),
+                # Keep opponent private cards out of the UI and training
+                # stream unless a caller explicitly opts into local practice
+                # reveals through TrackerConfig.
+                reveal_opponent_hand=False,
                 selected_deck=self._active_deck_snapshot(),
                 selected_deck_key=self._active_saved_deck().key if self._active_saved_deck() else None,
             ),
@@ -822,15 +805,14 @@ class TrackerApp(tk.Tk):
 
     def _toggle_match_recording(self) -> None:
         if self.record_matches_var.get():
-            self.status_var.set("已开启对局记录（仅保存到本机）")
+            self.status_var.set("已开启胜负统计（仅保存到本机）；训练记录始终自动保存")
         else:
-            self.status_var.set("已关闭对局记录")
+            self.status_var.set("已关闭胜负统计；训练记录仍会自动保存")
         self._update_stats_summary()
 
     def _drain_events(self) -> None:
         latest_snapshot: dict[str, object] | None = None
         status_after_snapshot: str | None = None
-        stale_lethal_result = False
         while True:
             try:
                 kind, value = self._events.get_nowait()
@@ -851,35 +833,10 @@ class TrackerApp(tk.Tk):
             if kind == "deck":
                 self._render_deck_info(value)  # type: ignore[arg-type]
                 continue
-            if kind == "lethal_view" and isinstance(value, tuple) and len(value) == 2:
-                generation, result = value
-                if isinstance(generation, int):
-                    restart = False
-                    with self._lethal_lock:
-                        current = generation == self._lethal_generation
-                        self._lethal_pending = False
-                        if current:
-                            self._lethal_view = result
-                            self._lethal_view_generation = generation
-                            self._lethal_dirty = False
-                            render_snapshot = self._last_snapshot
-                        else:
-                            render_snapshot = None
-                            restart = self._lethal_restart_requested
-                            self._lethal_restart_requested = False
-                    if current and isinstance(render_snapshot, dict):
-                        self._render_lethal_view(render_snapshot, result)
-                    elif not current and restart:
-                        # A second explicit click arrived while the previous
-                        # search was still running.  Start the requested
-                        # latest search after this stale result is discarded.
-                        stale_lethal_result = True
-                continue
             if kind == "snapshot" and isinstance(value, dict):
                 # The memory reader can produce several snapshots between UI
                 # ticks.  Rendering only the newest one keeps the window
-                # responsive; lethal search itself is started explicitly by
-                # the user from the latest snapshot.
+                # responsive; the tracker only renders the latest snapshot.
                 latest_snapshot = value
                 status_after_snapshot = None
                 continue
@@ -889,8 +846,6 @@ class TrackerApp(tk.Tk):
             self._render(latest_snapshot)
             if status_after_snapshot is not None:
                 self.status_var.set(status_after_snapshot)
-        if stale_lethal_result and self._last_snapshot is not None:
-            self._calculate_lethal()
         self.after(100, self._drain_events)
 
     @staticmethod
@@ -913,7 +868,6 @@ class TrackerApp(tk.Tk):
         self._render_overlay(snapshot)
         root = snapshot.get("root")
         if not isinstance(root, dict):
-            self._render_lethal(snapshot)
             return
         address = snapshot.get("address")
         if isinstance(address, str):
@@ -921,11 +875,9 @@ class TrackerApp(tk.Tk):
         self.status_var.set("已连接，正在后台读取（不会暂停游戏）")
         players = root.get("players", [])
         if not isinstance(players, (list, tuple)) or len(players) < 2:
-            self._render_lethal(snapshot)
             return
         mine, opponent = players[0], players[1]
         if not isinstance(mine, dict) or not isinstance(opponent, dict):
-            self._render_lethal(snapshot)
             return
         self._update_opponent_probability_inputs(snapshot, opponent)
         self._track_match(snapshot, mine, opponent)
@@ -1003,7 +955,6 @@ class TrackerApp(tk.Tk):
         self.class_counter_var.set(self._format_class_counters(snapshot))
         self._set_text(self.field_text, "\n".join(lines))
         self._set_text(self.history_text, self._format_recent_history(mine, opponent))
-        self._render_lethal(snapshot)
 
     def _render_lethal(self, snapshot: dict[str, object]) -> None:
         """Record a fresh snapshot without automatically running the solver."""
@@ -1296,16 +1247,6 @@ class TrackerApp(tk.Tk):
     def _clear_completed_match_display(self) -> None:
         """Immediately remove finished-match data while keeping saved results."""
         self._last_snapshot = None
-        if "_lethal_lock" in object.__getattribute__(self, "__dict__"):
-            with self._lethal_lock:
-                # Invalidate a solve that may still be running.  Its result
-                # will be ignored by the generation check in _drain_events.
-                self._lethal_generation += 1
-                self._lethal_latest_snapshot = None
-                self._lethal_view = None
-                self._lethal_view_generation = -1
-                self._lethal_restart_requested = False
-                self._lethal_dirty = True
         self._opponent_known_hand.reset()
         self.status_var.set("本局已结束，等待下一局")
         self.summary_var.set("本局已结束，等待下一局数据")
@@ -1319,10 +1260,6 @@ class TrackerApp(tk.Tk):
         self._render_active_deck_full()
         self._set_text(self.field_text, "等待下一局")
         self._set_text(self.history_text, "等待下一局")
-        if self._lethal_bridge is None:
-            self._set_text(self.lethal_text, self._lethal_status_message or "等待下一局")
-        else:
-            self._set_text(self.lethal_text, "本局已结束，等待下一局快照")
         self._render_overlay(None)
 
     def _track_match(
@@ -1364,10 +1301,15 @@ class TrackerApp(tk.Tk):
             if self._match_deck_key is None:
                 active = self._active_saved_deck()
                 self._match_deck_key = active.key if active else None
+        terminal_result = result_label(
+            result_code,
+            mine.get("life") if isinstance(mine.get("life"), int) else None,
+            opponent.get("life") if isinstance(opponent.get("life"), int) else None,
+        )
         if (
             self.record_matches_var.get()
             and self._match_id is not None
-            and result_code != 0
+            and terminal_result in {"胜利", "失败"}
             and self._match_deck_key
         ):
             deck = snapshot.get("deck")
@@ -1396,7 +1338,7 @@ class TrackerApp(tk.Tk):
                     self_class_id=(snapshot.get("self_class_id") if isinstance(snapshot.get("self_class_id"), int) else None),
                     opponent_class_id=opponent_class_id,
                     opponent_class=class_name(opponent_class_id),
-                    result=result_label(result_code, mine.get("life"), opponent.get("life")),
+                    result=terminal_result,
                     result_code=result_code,
                     turn=turn,
                     is_first=mine.get("is_first_side") if isinstance(mine.get("is_first_side"), bool) else None,
@@ -1407,7 +1349,7 @@ class TrackerApp(tk.Tk):
                 added = False
             if added:
                 self.stats_var.set("本局已保存；" + self._stats_summary_for_key(self._match_deck_key))
-        elif self.record_matches_var.get() and result_code != 0 and not self._match_deck_key:
+        elif self.record_matches_var.get() and terminal_result in {"胜利", "失败"} and not self._match_deck_key:
             self.stats_var.set("本局未保存：请先选择本地牌组")
         self._last_model_address = model_address
         self._last_render_turn = turn
@@ -1423,7 +1365,7 @@ class TrackerApp(tk.Tk):
 
     def _update_stats_summary(self) -> None:
         if not self.record_matches_var.get():
-            self.stats_var.set("对局记录未启用")
+            self.stats_var.set("胜负统计未启用（训练记录仍自动保存）")
             return
         if self._match_history_error:
             self.stats_var.set(f"对局记录保存失败：{self._match_history_error}")

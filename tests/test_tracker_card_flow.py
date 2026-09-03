@@ -64,6 +64,58 @@ class TrackerCardFlowTests(unittest.TestCase):
         self.assertEqual(ledger.to_dict()["burned_card_ids"], [cat])
         self.assertEqual(mine["_draw_history"], [{"turn": 6, "kind": "爆牌", "card_id": cat, "count": 1}])
 
+    def test_draw_response_with_new_managed_address_is_not_recorded_twice(self) -> None:
+        service = TrackerService(TrackerConfig(), on_snapshot=lambda _snapshot: None)
+        card = {"unique_id": 22, "base_card_id": 10000010}
+        previous = {
+            "current_turn": 2,
+            "root": {"players": [{"deck_count": 38, "turn": 2, "hand": [], "field": []}, {}]},
+            "events": [],
+        }
+        current = {
+            "current_turn": 2,
+            "root": {"players": [{"deck_count": 37, "turn": 2, "hand": [card], "field": []}, {}]},
+            "events": [{
+                "address": "0x1", "type": "BattleResponseDrawOpen", "sequence": 9,
+                "is_ally": True, "cards": [card],
+            }],
+        }
+        repeated = {
+            **current,
+            "events": [{
+                "address": "0x2", "type": "BattleResponseDrawOpen", "sequence": 9,
+                "is_ally": True, "cards": [card],
+            }],
+        }
+        service._capture_self_draws_and_burns(previous, previous["root"]["players"][0])
+        service._capture_self_draws_and_burns(current, current["root"]["players"][0])
+        service._capture_self_draws_and_burns(repeated, repeated["root"]["players"][0])
+        self.assertEqual(repeated["root"]["players"][0]["_draw_history"], [
+            {"turn": 2, "kind": "抽取", "card_id": 10000010},
+        ])
+
+    def test_play_response_with_new_managed_address_is_not_recorded_twice(self) -> None:
+        service = TrackerService(TrackerConfig(), on_snapshot=lambda _snapshot: None)
+        players = [{}, {}]
+        first = {
+            "current_turn": 3,
+            "events": [{
+                "address": "0x1", "type": "BattleResponsePlayOpen", "sequence": 11,
+                "is_ally": True, "card_id": 10000010, "unique_id": 41,
+            }],
+        }
+        second = {
+            "current_turn": 3,
+            "events": [{
+                "address": "0x2", "type": "BattleResponsePlayOpen", "sequence": 11,
+                "is_ally": True, "card_id": 10000010, "unique_id": 41,
+            }],
+        }
+        service._capture_public_play_events(first, players)
+        service._capture_public_play_events(second, players)
+        self.assertEqual(players[0]["_event_played_cards"], [{"turn": 3, "card_id": 10000010}])
+        self.assertEqual(len(players[0]["_training_events"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

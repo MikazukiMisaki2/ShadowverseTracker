@@ -947,6 +947,337 @@ def read_il2cpp_type_name(reader: MemoryReader, object_address: int) -> str:
     return f"{namespace}.{name}" if namespace else name
 
 
+def _event_card_summary(reader: MemoryReader, address: int, *, field: bool) -> dict[str, object] | None:
+    """Decode the identity/status subset carried by a response card.
+
+    Response objects are short-lived and some game versions omit optional
+    nested cards.  Callers deliberately treat a failed nested read as an
+    absent annotation instead of dropping the entire battle snapshot.
+    """
+    if not address:
+        return None
+    try:
+        value = asdict(read_field_card(reader, address) if field else read_hand_card(reader, address))
+    except (OSError, ValueError, LookupError):
+        return None
+    keep = (
+        ("unique_id", "card_id", "cost", "attack", "life", "max_life", "card_type", "evolve_state", "style_id")
+        if field
+        else ("unique_id", "card_id", "base_card_id", "cost", "attack", "life", "card_type", "style_id")
+    )
+    return {key: value[key] for key in keep if key in value}
+
+
+def _event_cards(reader: MemoryReader, collection_address: int, *, field: bool, maximum: int) -> list[dict[str, object]]:
+    if not collection_address:
+        return []
+    try:
+        addresses = read_reference_collection(reader, collection_address, maximum=maximum)
+    except (OSError, ValueError, LookupError):
+        return []
+    return [
+        summary
+        for address in addresses
+        if (summary := _event_card_summary(reader, address, field=field)) is not None
+    ]
+
+
+def _event_int_values(reader: MemoryReader, collection_address: int, *, maximum: int) -> list[int]:
+    if not collection_address:
+        return []
+    try:
+        return list(_read_i32_collection(reader, collection_address, maximum=maximum))
+    except (OSError, ValueError, LookupError):
+        return []
+
+
+def _event_nested_int_values(
+    reader: MemoryReader,
+    collection_address: int,
+    *,
+    maximum_outer: int,
+    maximum_inner: int,
+) -> list[list[int]]:
+    """Read the nested target-id lists carried by card selections.
+
+    ``PutCardFromHand``, ``CastSpellFromHand`` and ``Activation`` all use a
+    ``List<List<BattleCardUniqueId>>`` for their selectable targets.  The
+    outer collection is a managed ``List`` in the live client, while each
+    inner value is either an array or a ``List<int>``.  Keep this helper
+    best-effort so an animation object released between polls never makes the
+    entire battle snapshot unreadable.
+    """
+    if not collection_address:
+        return []
+    try:
+        outer = read_reference_collection(reader, collection_address, maximum=maximum_outer)
+    except (OSError, ValueError, LookupError):
+        return []
+    result: list[list[int]] = []
+    for inner_address in outer:
+        if not inner_address:
+            result.append([])
+            continue
+        try:
+            result.append(list(_read_i32_collection(reader, inner_address, maximum=maximum_inner)))
+        except (OSError, ValueError, LookupError):
+            result.append([])
+    return result
+
+
+def _event_field_card_targets(
+    reader: MemoryReader,
+    collection_address: int,
+    *,
+    maximum: int,
+    include_is_ally: bool = True,
+) -> list[dict[str, object]]:
+    """Decode response target records whose first field is a FieldCard."""
+    if not collection_address:
+        return []
+    try:
+        target_addresses = read_reference_collection(reader, collection_address, maximum=maximum)
+    except (OSError, ValueError, LookupError):
+        return []
+    result: list[dict[str, object]] = []
+    for target_address in target_addresses:
+        if not target_address:
+            continue
+        try:
+            card = _event_card_summary(reader, reader.read_u64(target_address + 0x10), field=True)
+            if card is None:
+                continue
+            # Most target DTOs carry ``IsAlly`` immediately after the card
+            # pointer.  PutToken.Target is the exception: that byte is
+            # ``IsOverflow`` and the side lives on the parent response.
+            if include_is_ally:
+                card["is_ally"] = bool(reader.read_u32(target_address + 0x18) & 0xFF)
+            result.append(card)
+        except (OSError, ValueError, LookupError):
+            continue
+    return result
+
+
+def _event_scalar_targets(
+    reader: MemoryReader,
+    collection_address: int,
+    *,
+    kind: str,
+    maximum: int,
+) -> list[dict[str, object]]:
+    """Decode compact target DTOs used by non-damage responses.
+
+    The server protocol uses several tiny target classes (countdown changes,
+    leader-area/crest changes, deck pushes, and field transforms).  They are
+    deliberately decoded into plain dictionaries so the training normalizer
+    can retain the choice without coupling it to a particular IL2CPP class.
+    """
+    if not collection_address:
+        return []
+    try:
+        addresses = read_reference_collection(reader, collection_address, maximum=maximum)
+    except (OSError, ValueError, LookupError):
+        return []
+    result: list[dict[str, object]] = []
+    for target_address in addresses:
+        if not target_address:
+            continue
+        try:
+            if kind == "set_countdown":
+                values = {
+                    "unique_id": reader.read_u32(target_address + 0x10),
+                    "card_id": reader.read_i32(target_address + 0x14),
+                    "style_id": reader.read_i32(target_address + 0x18),
+                    "count": reader.read_i32(target_address + 0x1C),
+                    "add_count": reader.read_i32(target_address + 0x20),
+                    "count_sequence": reader.read_i32(target_address + 0x24),
+                    "is_ally": bool(reader.read_u32(target_address + 0x28) & 0xFF),
+                    "is_by_turn_start": bool(reader.read_u32(target_address + 0x29) & 0xFF),
+                }
+            elif kind == "spell_boost":
+                values = {
+                    "is_ally": bool(reader.read_u32(target_address + 0x10) & 0xFF),
+                    "unique_id": reader.read_u32(target_address + 0x14),
+                }
+            elif kind == "change_leader":
+                values = {
+                    "is_ally": bool(reader.read_u32(target_address + 0x10) & 0xFF),
+                    "card_id": reader.read_i32(target_address + 0x14),
+                    "style_id": reader.read_i32(target_address + 0x18),
+                    "count": reader.read_i32(target_address + 0x1C),
+                    "add_count": reader.read_i32(target_address + 0x20),
+                    "created_by_evolved": bool(reader.read_u32(target_address + 0x24) & 0xFF),
+                }
+            elif kind in {"remove_crest", "remove_extra"}:
+                values = {
+                    "unique_id": reader.read_u32(target_address + 0x10),
+                    "card_id": reader.read_i32(target_address + 0x14),
+                    "style_id": reader.read_i32(target_address + 0x18),
+                    "created_by_evolved": bool(reader.read_u32(target_address + 0x1C) & 0xFF),
+                    "is_ally": bool(reader.read_u32(target_address + 0x1D) & 0xFF),
+                }
+            elif kind == "push_deck":
+                values = {
+                    "unique_id": reader.read_u32(target_address + 0x10),
+                    "card_id": reader.read_i32(target_address + 0x14),
+                    "style_id": reader.read_i32(target_address + 0x18),
+                    "cost": reader.read_i32(target_address + 0x1C),
+                    "attack": reader.read_i32(target_address + 0x20),
+                    "life": reader.read_i32(target_address + 0x24),
+                }
+            elif kind == "transform_field":
+                values = {
+                    "unique_id": reader.read_u32(target_address + 0x10),
+                    "after_card": _event_card_summary(reader, reader.read_u64(target_address + 0x18), field=True),
+                    "is_ally": bool(reader.read_u32(target_address + 0x20) & 0xFF),
+                }
+            elif kind == "skybound":
+                values = {
+                    "is_ally": bool(reader.read_u32(target_address + 0x10) & 0xFF),
+                    "unique_id": reader.read_u32(target_address + 0x14),
+                }
+            elif kind == "leader_status":
+                values = {
+                    "unique_id": reader.read_u32(target_address + 0x10),
+                    "life": reader.read_i32(target_address + 0x14),
+                    "max_life": reader.read_i32(target_address + 0x18),
+                    "add_max_life": reader.read_i32(target_address + 0x1C),
+                    "is_ally": bool(reader.read_u32(target_address + 0x20) & 0xFF),
+                }
+            elif kind == "attach_field":
+                values = {
+                    "unique_id": reader.read_u32(target_address + 0x10),
+                    "card_id": reader.read_i32(target_address + 0x14),
+                    "style_id": reader.read_i32(target_address + 0x18),
+                    "is_evolved": bool(reader.read_u32(target_address + 0x1C) & 0xFF),
+                    "is_ally": bool(reader.read_u32(target_address + 0x1D) & 0xFF),
+                }
+            elif kind in {"attach_hand", "attach_leader", "attach_extra"}:
+                values = {
+                    "unique_id": reader.read_u32(target_address + 0x10),
+                    "card_id": reader.read_i32(target_address + 0x14),
+                    "style_id": reader.read_i32(target_address + 0x18),
+                    "is_ally": bool(reader.read_u32(target_address + 0x1C) & 0xFF),
+                }
+            elif kind == "extra_count":
+                values = {
+                    "is_ally": bool(reader.read_u32(target_address + 0x10) & 0xFF),
+                    "card_id": reader.read_i32(target_address + 0x14),
+                    "style_id": reader.read_i32(target_address + 0x18),
+                    "count": reader.read_i32(target_address + 0x1C),
+                    "add_count": reader.read_i32(target_address + 0x20),
+                    "created_by_evolved": bool(reader.read_u32(target_address + 0x24) & 0xFF),
+                }
+            elif kind == "bounce":
+                values = {
+                    "unique_id": reader.read_u32(target_address + 0x10),
+                    "after_card": _event_card_summary(reader, reader.read_u64(target_address + 0x18), field=False),
+                    "is_ally": bool(reader.read_u32(target_address + 0x20) & 0xFF),
+                    "is_flood": bool(reader.read_u32(target_address + 0x21) & 0xFF),
+                }
+            elif kind == "bounce_deck":
+                values = {
+                    "unique_id": reader.read_u32(target_address + 0x10),
+                    "card_id": reader.read_i32(target_address + 0x14),
+                    "style_id": reader.read_i32(target_address + 0x18),
+                    "is_ally": bool(reader.read_u32(target_address + 0x1C) & 0xFF),
+                }
+            elif kind == "return_deck":
+                values = {
+                    "unique_id": reader.read_u32(target_address + 0x10),
+                    "card_id": reader.read_i32(target_address + 0x14),
+                    "style_id": reader.read_i32(target_address + 0x18),
+                }
+            else:
+                continue
+        except (OSError, ValueError, LookupError):
+            continue
+        if any(int(values.get(key, 0) or 0) for key in ("unique_id", "card_id")):
+            result.append(values)
+    return result
+
+
+def _event_target_summaries(reader: MemoryReader, collection_address: int, *, kind: str) -> list[dict[str, object]]:
+    """Decode the small target records used by damage/status responses."""
+    if not collection_address:
+        return []
+    try:
+        addresses = read_reference_collection(reader, collection_address, maximum=MAX_FIELD_CARDS + MAX_HAND_CARDS)
+    except (OSError, ValueError, LookupError):
+        return []
+    result: list[dict[str, object]] = []
+    for address in addresses:
+        if not address:
+            continue
+        try:
+            if kind == "damage":
+                values = {
+                    "unique_id": reader.read_u32(address + 0x10),
+                    "card_id": reader.read_i32(address + 0x14),
+                    "damage": reader.read_i32(address + 0x18),
+                    "is_ally": bool(reader.read_u32(address + 0x1C) & 0xFF),
+                    "is_dead": bool(reader.read_u32(address + 0x1D) & 0xFF),
+                    "is_evolved": bool(reader.read_u32(address + 0x1E) & 0xFF),
+                    "style_id": reader.read_i32(address + 0x20),
+                }
+            elif kind == "heal":
+                values = {
+                    "unique_id": reader.read_u32(address + 0x10),
+                    "card_id": reader.read_i32(address + 0x14),
+                    "is_ally": bool(reader.read_u32(address + 0x18) & 0xFF),
+                    "is_evolved": bool(reader.read_u32(address + 0x19) & 0xFF),
+                    "healed": reader.read_i32(address + 0x1C),
+                    "style_id": reader.read_i32(address + 0x20),
+                }
+            elif kind == "field_status":
+                values = {
+                    "card_id": reader.read_i32(address + 0x10),
+                    "unique_id": reader.read_u32(address + 0x14),
+                    "atk": reader.read_i32(address + 0x18),
+                    "life": reader.read_i32(address + 0x1C),
+                    "max_life": reader.read_i32(address + 0x20),
+                    "add_atk": reader.read_i32(address + 0x24),
+                    "add_life": reader.read_i32(address + 0x28),
+                    "add_max_life": reader.read_i32(address + 0x2C),
+                    "is_ally": bool(reader.read_u32(address + 0x30) & 0xFF),
+                    "is_evolved": bool(reader.read_u32(address + 0x31) & 0xFF),
+                    "style_id": reader.read_i32(address + 0x34),
+                }
+            elif kind == "hand_status":
+                values = {
+                    "card_id": reader.read_i32(address + 0x10),
+                    "unique_id": reader.read_u32(address + 0x14),
+                    "card_type": reader.read_i32(address + 0x18),
+                    "cost": reader.read_i32(address + 0x1C),
+                    "atk": reader.read_i32(address + 0x20),
+                    "life": reader.read_i32(address + 0x24),
+                    "add_cost": reader.read_i32(address + 0x28),
+                    "added_cost": reader.read_i32(address + 0x2C),
+                    "added_atk": reader.read_i32(address + 0x30),
+                    "added_life": reader.read_i32(address + 0x34),
+                    "is_ally": bool(reader.read_u32(address + 0x38) & 0xFF),
+                    "style_id": reader.read_i32(address + 0x3C),
+                }
+            elif kind == "remove":
+                values = {
+                    "unique_id": reader.read_u32(address + 0x10),
+                    "card_id": reader.read_i32(address + 0x14),
+                    "is_ally": bool(reader.read_u32(address + 0x18) & 0xFF),
+                    "is_evolved": bool(reader.read_u32(address + 0x19) & 0xFF),
+                    "remove_type": reader.read_i32(address + 0x24),
+                    "attack_card_id": reader.read_i32(address + 0x28),
+                }
+            else:
+                continue
+        except (OSError, ValueError, LookupError):
+            continue
+        # Zero IDs are placeholders, not actual cards.  Keep non-card scalar
+        # fields only when a valid identity was decoded.
+        if int(values.get("unique_id", 0) or 0) or int(values.get("card_id", 0) or 0):
+            result.append(values)
+    return result
+
+
 def _read_battle_event(reader: MemoryReader, address: int) -> dict[str, object]:
     full_name = read_il2cpp_type_name(reader, address)
     name = full_name.rsplit(".", 1)[-1]
@@ -964,12 +1295,49 @@ def _read_battle_event(reader: MemoryReader, address: int) -> dict[str, object]:
             cards=[asdict(read_hand_card(reader, card)) for card in cards if card],
             add_num=reader.read_i32(address + 0x28),
             is_turn_start_draw=bool(reader.read_u32(address + 0x2C) & 0xFF),
+            is_super_evolve=bool(reader.read_u32(address + 0x2D) & 0xFF),
+            skill_id=reader.read_i32(address + 0x30),
         )
+        if name == "BattleResponseDrawOpenWithEffect":
+            event["effect_targets"] = _event_int_values(reader, reader.read_u64(address + 0x38), maximum=MAX_FIELD_CARDS + MAX_HAND_CARDS)
     elif name == "BattleResponseDrawHide":
         event.update(
             draw_num=reader.read_i32(address + 0x18),
             add_num=reader.read_i32(address + 0x1C),
             is_turn_start_draw=bool(reader.read_u32(address + 0x20) & 0xFF),
+            is_super_evolve=bool(reader.read_u32(address + 0x21) & 0xFF),
+            skill_id=reader.read_i32(address + 0x24),
+        )
+    elif name in {"BattleResponseMulliganReady", "BattleResponseMulliganFinish"}:
+        # These responses mark the opening-hand phase.  The root pointer in
+        # the ready/finish DTO is intentionally not followed; the root
+        # snapshot is already captured separately and is the authoritative
+        # replay state.
+        if name == "BattleResponseMulliganReady":
+            event["is_ally"] = bool(reader.read_u32(address + 0x18) & 0xFF)
+        event["phase"] = "mulligan_ready" if name.endswith("Ready") else "mulligan_finish"
+    elif name in {"BattleResponseTurnStart", "BattleResponseTurnStartEnd"}:
+        event.update(
+            is_ally=bool(reader.read_u32(address + 0x18) & 0xFF),
+            turn=reader.read_i32(address + 0x1C),
+            phase="turn_start" if name.endswith("TurnStart") else "turn_start_end",
+        )
+    elif name == "BattleResponseTurnEnd":
+        event.update(
+            is_ally=bool(reader.read_u32(address + 0x18) & 0xFF),
+            is_force=bool(reader.read_u32(address + 0x19) & 0xFF),
+            phase="turn_end",
+        )
+    elif name == "BattleResponseTurnEndSkillEnd":
+        event.update(
+            is_ally=bool(reader.read_u32(address + 0x18) & 0xFF),
+            phase="turn_end_skill_end",
+        )
+    elif name == "BattleResponseActionEnd":
+        event.update(
+            is_ally=bool(reader.read_u32(address + 0x18) & 0xFF),
+            is_delay=bool(reader.read_u32(address + 0x19) & 0xFF),
+            phase="action_end",
         )
     elif name == "BattleResponsePlayOpen":
         event.update(
@@ -978,7 +1346,132 @@ def _read_battle_event(reader: MemoryReader, address: int) -> dict[str, object]:
             card_id=reader.read_i32(address + 0x20),
             card_style_id=reader.read_i32(address + 0x24),
             after_play_card_id=reader.read_i32(address + 0x28),
+            after_play_card_style_id=reader.read_i32(address + 0x2C),
             play_kind=reader.read_i32(address + 0x30),
+            target_unique_id_by_skills=_event_nested_int_values(
+                reader, reader.read_u64(address + 0x38), maximum_outer=MAX_CARD_COUNTERS,
+                maximum_inner=MAX_FIELD_CARDS + MAX_HAND_CARDS + 2,
+            ),
+            selected_indexes=_event_int_values(
+                reader, reader.read_u64(address + 0x40), maximum=MAX_CARD_COUNTERS,
+            ),
+        )
+    elif name == "BattleResponseUpdatePP":
+        event.update(
+            pp=reader.read_i32(address + 0x18),
+            max_pp=reader.read_i32(address + 0x1C),
+            preparation_extra_pp=reader.read_i32(address + 0x20),
+            is_ally=bool(reader.read_u32(address + 0x24) & 0xFF),
+            skill_id=reader.read_i32(address + 0x28),
+            skill_add_pp=reader.read_i32(address + 0x2C),
+            skill_add_max_pp=reader.read_i32(address + 0x30),
+            is_super_evolve=bool(reader.read_u32(address + 0x34) & 0xFF),
+            is_consume_extra_pp=bool(reader.read_u32(address + 0x35) & 0xFF),
+            prev_pp=reader.read_i32(address + 0x38),
+            is_card_play=bool(reader.read_u32(address + 0x3C) & 0xFF),
+        )
+    elif name == "BattleResponseSetAttackLimit":
+        event.update(
+            unique_id=reader.read_u32(address + 0x18),
+            card_id=reader.read_i32(address + 0x1C),
+            style_id=reader.read_i32(address + 0x20),
+            is_evolved=bool(reader.read_u32(address + 0x24) & 0xFF),
+            is_ally=bool(reader.read_u32(address + 0x25) & 0xFF),
+            skill_id=reader.read_i32(address + 0x28),
+            is_changed_ability=bool(reader.read_u32(address + 0x2C) & 0xFF),
+            attack_limit=reader.read_i32(address + 0x30),
+        )
+    elif name in {"BattleResponseAddModeSelectableCount", "BattleResponseIncreaseDamage"}:
+        event.update(
+            card_id=reader.read_i32(address + 0x18),
+            style_id=reader.read_i32(address + 0x1C),
+            is_evolved=bool(reader.read_u32(address + 0x20) & 0xFF),
+            is_ally=bool(reader.read_u32(address + 0x21) & 0xFF),
+            skill_id=reader.read_i32(address + 0x24),
+        )
+    elif name == "BattleResponsePutCardFromHand":
+        event.update(
+            card=_event_card_summary(reader, reader.read_u64(address + 0x18), field=True),
+            is_ally=bool(reader.read_u32(address + 0x20) & 0xFF),
+            unique_id_before=reader.read_u32(address + 0x24),
+            enhance_index=reader.read_i32(address + 0x28),
+            target_unique_id_by_skills=_event_nested_int_values(
+                reader, reader.read_u64(address + 0x30), maximum_outer=MAX_CARD_COUNTERS,
+                maximum_inner=MAX_FIELD_CARDS + MAX_HAND_CARDS + 2,
+            ),
+            selected_indexes=_event_int_values(
+                reader, reader.read_u64(address + 0x38), maximum=MAX_CARD_COUNTERS,
+            ),
+            skybound_art_state=reader.read_i32(address + 0x40),
+        )
+    elif name == "BattleResponseCastSpellFromHand":
+        event.update(
+            card=_event_card_summary(reader, reader.read_u64(address + 0x18), field=True),
+            is_ally=bool(reader.read_u32(address + 0x20) & 0xFF),
+            unique_id_before_accelerate=reader.read_u32(address + 0x24),
+            enhance_index=reader.read_i32(address + 0x28),
+            target_unique_id_by_skills=_event_nested_int_values(
+                reader, reader.read_u64(address + 0x30), maximum_outer=MAX_CARD_COUNTERS,
+                maximum_inner=MAX_FIELD_CARDS + MAX_HAND_CARDS + 2,
+            ),
+            selected_indexes=_event_int_values(
+                reader, reader.read_u64(address + 0x38), maximum=MAX_CARD_COUNTERS,
+            ),
+            skybound_art_state=reader.read_i32(address + 0x40),
+        )
+    elif name == "BattleResponseActivation":
+        event.update(
+            card=_event_card_summary(reader, reader.read_u64(address + 0x18), field=True),
+            is_ally=bool(reader.read_u32(address + 0x20) & 0xFF),
+            target_unique_id_by_skills=_event_nested_int_values(
+                reader, reader.read_u64(address + 0x28), maximum_outer=MAX_CARD_COUNTERS,
+                maximum_inner=MAX_FIELD_CARDS + MAX_HAND_CARDS + 2,
+            ),
+            selected_indexes=_event_int_values(
+                reader, reader.read_u64(address + 0x30), maximum=MAX_CARD_COUNTERS,
+            ),
+        )
+    elif name == "BattleResponseFusion":
+        event.update(
+            fusion_card=_event_card_summary(reader, reader.read_u64(address + 0x18), field=False),
+            material_cards=_event_cards(
+                reader, reader.read_u64(address + 0x20), field=False, maximum=MAX_HAND_CARDS,
+            ),
+            is_ally=bool(reader.read_u32(address + 0x28) & 0xFF),
+            can_fusion_transform=bool(reader.read_u32(address + 0x29) & 0xFF),
+        )
+    elif name == "BattleResponseAttack":
+        event.update(
+            from_unique_id=reader.read_u32(address + 0x18),
+            from_card_id=reader.read_i32(address + 0x1C),
+            from_damage=reader.read_i32(address + 0x20),
+            from_remove_type=reader.read_i32(address + 0x24),
+            is_from_evolved=bool(reader.read_u32(address + 0x28) & 0xFF),
+            to_unique_id=reader.read_u32(address + 0x2C),
+            to_card_id=reader.read_i32(address + 0x30),
+            to_damage=reader.read_i32(address + 0x34),
+            to_remove_type=reader.read_i32(address + 0x38),
+            is_to_evolved=bool(reader.read_u32(address + 0x3C) & 0xFF),
+            is_ally=bool(reader.read_u32(address + 0x3D) & 0xFF),
+            from_card_style_id=reader.read_i32(address + 0x40),
+            to_card_style_id=reader.read_i32(address + 0x44),
+            is_super_evolve_blow=bool(reader.read_u32(address + 0x48) & 0xFF),
+        )
+    elif name == "BattleResponseSuperEvolveBlow":
+        event.update(
+            from_unique_id=reader.read_u32(address + 0x18),
+            to_card_unique_id=reader.read_u32(address + 0x1C),
+            to_leader_unique_id=reader.read_u32(address + 0x20),
+            damage=reader.read_i32(address + 0x24),
+            is_ally=bool(reader.read_u32(address + 0x28) & 0xFF),
+            is_dead=bool(reader.read_u32(address + 0x29) & 0xFF),
+        )
+    elif name == "BattleResponseCancelAttack":
+        event.update(
+            from_unique_id=reader.read_u32(address + 0x18),
+            from_new_life=reader.read_i32(address + 0x1C),
+            to_unique_id=reader.read_u32(address + 0x20),
+            to_new_life=reader.read_i32(address + 0x24),
         )
     elif name == "BattleResponseMulligan":
         # ``change_card_flags`` is a bit mask (one bit for each of the four
@@ -987,10 +1480,574 @@ def _read_battle_event(reader: MemoryReader, address: int) -> dict[str, object]:
             draw_num=reader.read_i32(address + 0x18),
             is_ally=bool(reader.read_u32(address + 0x1C) & 0xFF),
             change_card_flags=reader.read_u32(address + 0x28),
+            hand_cards=_event_cards(reader, reader.read_u64(address + 0x20), field=False, maximum=MAX_HAND_CARDS),
+            is_time_over=bool(reader.read_u32(address + 0x2C) & 0xFF),
+        )
+    elif name == "BattleResponseEvolve":
+        event.update(
+            evolved_card=_event_card_summary(reader, reader.read_u64(address + 0x18), field=True),
+            is_ally=bool(reader.read_u32(address + 0x20) & 0xFF),
+            new_ep=reader.read_i32(address + 0x24),
+            new_ep_max=reader.read_i32(address + 0x28),
+            new_sep=reader.read_i32(address + 0x2C),
+            is_super=bool(reader.read_u32(address + 0x30) & 0xFF),
+            target_unique_id_by_skills=_event_nested_int_values(
+                reader, reader.read_u64(address + 0x38), maximum_outer=MAX_CARD_COUNTERS,
+                maximum_inner=MAX_FIELD_CARDS + MAX_HAND_CARDS + 2,
+            ),
+            selected_indexes=_event_int_values(
+                reader, reader.read_u64(address + 0x40), maximum=MAX_CARD_COUNTERS,
+            ),
+        )
+    elif name == "BattleResponseSkillEvolve":
+        event.update(
+            act_card_unique_id=reader.read_u32(address + 0x18),
+            act_card_id=reader.read_i32(address + 0x1C),
+            targets=_event_field_card_targets(
+                reader, reader.read_u64(address + 0x20), maximum=MAX_FIELD_CARDS,
+            ),
+            skill_id=reader.read_i32(address + 0x28),
+            act_card_style_id=reader.read_i32(address + 0x2C),
+            is_super_evolve_timing=bool(reader.read_u32(address + 0x30) & 0xFF),
+            is_super_evolve=bool(reader.read_u32(address + 0x31) & 0xFF),
+        )
+    elif name == "BattleResponseUpdateEP":
+        event.update(
+            is_ally=bool(reader.read_u32(address + 0x18) & 0xFF),
+            max_ep=reader.read_i32(address + 0x1C),
+            ep=reader.read_i32(address + 0x20),
+            max_sep=reader.read_i32(address + 0x24),
+            sep=reader.read_i32(address + 0x28),
+            skill_id=reader.read_i32(address + 0x2C),
+            card_id=reader.read_i32(address + 0x30),
+            style_id=reader.read_i32(address + 0x34),
+        )
+    elif name == "BattleResponsePutCardFromDeck":
+        event.update(
+            cards=_event_cards(reader, reader.read_u64(address + 0x18), field=True, maximum=MAX_FIELD_CARDS),
+            is_ally=bool(reader.read_u32(address + 0x20) & 0xFF),
+            skill_id=reader.read_i32(address + 0x24),
+            is_super_evolve=bool(reader.read_u32(address + 0x28) & 0xFF),
+            is_invocation=bool(reader.read_u32(address + 0x29) & 0xFF),
+            act_card_id=reader.read_i32(address + 0x2C),
+            act_style_id=reader.read_i32(address + 0x30),
+        )
+    elif name == "BattleResponsePutToken":
+        targets = _event_field_card_targets(
+            reader, reader.read_u64(address + 0x18), maximum=MAX_FIELD_CARDS + MAX_HAND_CARDS,
+            include_is_ally=False,
+        )
+        # PutToken.Target has one extra flag beyond the common card/side
+        # fields.  Read it separately when the target record is available.
+        try:
+            target_addresses = read_reference_collection(
+                reader, reader.read_u64(address + 0x18), maximum=MAX_FIELD_CARDS + MAX_HAND_CARDS,
+            )
+        except (OSError, ValueError, LookupError):
+            target_addresses = ()
+        for index, target_address in enumerate(target_addresses[:len(targets)]):
+            try:
+                targets[index]["is_overflow"] = bool(reader.read_u32(target_address + 0x18) & 0xFF)
+            except (OSError, ValueError, LookupError):
+                pass
+        event.update(
+            targets=targets,
+            is_ally=bool(reader.read_u32(address + 0x20) & 0xFF),
+            skill_id=reader.read_i32(address + 0x24),
+            is_super_evolve=bool(reader.read_u32(address + 0x28) & 0xFF),
+            act_card_id=reader.read_i32(address + 0x2C),
+            act_style_id=reader.read_i32(address + 0x30),
+        )
+    elif name == "BattleResponseSetCountdown":
+        event.update(
+            targets=_event_scalar_targets(
+                reader, reader.read_u64(address + 0x18), kind="set_countdown", maximum=MAX_FIELD_CARDS + MAX_CRESTS,
+            ),
+            skill_id=reader.read_i32(address + 0x20),
+        )
+    elif name == "BattleResponseSpellBoost":
+        event.update(
+            targets=_event_scalar_targets(
+                reader, reader.read_u64(address + 0x18), kind="spell_boost", maximum=MAX_HAND_CARDS,
+            ),
+            is_super_evolve=bool(reader.read_u32(address + 0x20) & 0xFF),
+            add_count=reader.read_i32(address + 0x24),
+        )
+    elif name == "BattleResponseExtraPP":
+        event.update(
+            pp=reader.read_i32(address + 0x18),
+            max_pp=reader.read_i32(address + 0x1C),
+            is_ally=bool(reader.read_u32(address + 0x20) & 0xFF),
+            is_cancel=bool(reader.read_u32(address + 0x21) & 0xFF),
+        )
+    elif name == "BattleResponseExtraPPRestore":
+        event["is_ally"] = bool(reader.read_u32(address + 0x18) & 0xFF)
+    elif name == "BattleResponseTransformField":
+        event.update(
+            targets=_event_scalar_targets(
+                reader, reader.read_u64(address + 0x18), kind="transform_field", maximum=MAX_FIELD_CARDS,
+            ),
+            skill_id=reader.read_i32(address + 0x20),
+        )
+    elif name in {"BattleResponseTransformHand", "BattleResponseFusionTransform"}:
+        event.update(
+            before_unique_id=reader.read_u32(address + 0x18),
+            after_card=_event_card_summary(reader, reader.read_u64(address + 0x20), field=False),
+            is_ally=bool(reader.read_u32(address + 0x28) & 0xFF),
+            skill_id=reader.read_i32(address + 0x2C),
+        )
+    elif name == "BattleResponseBounce":
+        event.update(
+            targets=_event_scalar_targets(
+                reader, reader.read_u64(address + 0x18), kind="bounce", maximum=MAX_FIELD_CARDS,
+            ),
+            is_super_evolve=bool(reader.read_u32(address + 0x20) & 0xFF),
+            skill_id=reader.read_i32(address + 0x24),
+        )
+    elif name == "BattleResponseBounceIntoDeck":
+        event.update(
+            targets=_event_scalar_targets(
+                reader, reader.read_u64(address + 0x18), kind="bounce_deck", maximum=MAX_FIELD_CARDS,
+            ),
+            is_super_evolve=bool(reader.read_u32(address + 0x20) & 0xFF),
+            skill_id=reader.read_i32(address + 0x24),
+        )
+    elif name == "BattleResponceReturnDeck":
+        event.update(
+            targets=_event_scalar_targets(
+                reader, reader.read_u64(address + 0x18), kind="return_deck", maximum=MAX_FIELD_CARDS,
+            ),
+            is_ally=bool(reader.read_u32(address + 0x20) & 0xFF),
+            skill_id=reader.read_i32(address + 0x24),
+            is_open=bool(reader.read_u32(address + 0x28) & 0xFF),
+        )
+    elif name == "BattleResponseSpecialAction":
+        event.update(
+            card=_event_card_summary(reader, reader.read_u64(address + 0x18), field=True),
+            is_ally=bool(reader.read_u32(address + 0x20) & 0xFF),
+            target_unique_id_by_skills=_event_nested_int_values(
+                reader, reader.read_u64(address + 0x28), maximum_outer=MAX_CARD_COUNTERS,
+                maximum_inner=MAX_FIELD_CARDS + MAX_HAND_CARDS + 2,
+            ),
+            selected_indexes=_event_int_values(
+                reader, reader.read_u64(address + 0x30), maximum=MAX_CARD_COUNTERS,
+            ),
+        )
+    elif name == "BattleResponseSkillDamage":
+        event.update(
+            act_card_unique_id=reader.read_u32(address + 0x18),
+            act_card_id=reader.read_i32(address + 0x1C),
+            skill_id=reader.read_i32(address + 0x20),
+            is_act_ally=bool(reader.read_u32(address + 0x24) & 0xFF),
+            targets=_event_target_summaries(reader, reader.read_u64(address + 0x28), kind="damage"),
+            act_card_style_id=reader.read_i32(address + 0x30),
+            is_super_evolve=bool(reader.read_u32(address + 0x34) & 0xFF),
+        )
+    elif name == "BattleResponseSkillHeal":
+        event.update(
+            skill_id=reader.read_i32(address + 0x18),
+            targets=_event_target_summaries(reader, reader.read_u64(address + 0x20), kind="heal"),
+            card_id=reader.read_i32(address + 0x28),
+            style_id=reader.read_i32(address + 0x2C),
+            is_super_evolve=bool(reader.read_u32(address + 0x30) & 0xFF),
+        )
+    elif name == "BattleResponseHeal":
+        event.update(
+            unique_id=reader.read_u32(address + 0x18),
+            healed=reader.read_i32(address + 0x1C),
+            is_ally=bool(reader.read_u32(address + 0x20) & 0xFF),
+        )
+    elif name == "BattleResponseSkillEffect":
+        event.update(
+            is_ally=bool(reader.read_u32(address + 0x18) & 0xFF),
+            skill_id=reader.read_i32(address + 0x1C),
+            from_unique_id=reader.read_u32(address + 0x20),
+            from_card_id=reader.read_i32(address + 0x24),
+            is_evolved_from=bool(reader.read_u32(address + 0x28) & 0xFF),
+            target_unique_ids=_event_int_values(reader, reader.read_u64(address + 0x30), maximum=MAX_FIELD_CARDS + MAX_HAND_CARDS + 2),
+            effect=reader.read_i32(address + 0x38),
+            sub_effect=reader.read_i32(address + 0x3C),
+            from_card_style_id=reader.read_i32(address + 0x40),
+            is_super_evolve=bool(reader.read_u32(address + 0x44) & 0xFF),
+        )
+    elif name == "BattleResponseSkillEffectEach":
+        targets_address = reader.read_u64(address + 0x30)
+        targets: list[dict[str, object]] = []
+        try:
+            target_addresses = read_reference_collection(reader, targets_address, maximum=MAX_FIELD_CARDS + MAX_HAND_CARDS + 2)
+        except (OSError, ValueError, LookupError):
+            target_addresses = ()
+        for target_address in target_addresses:
+            try:
+                targets.append({"unique_id": reader.read_u32(target_address + 0x10), "is_ally": bool(reader.read_u32(target_address + 0x14) & 0xFF)})
+            except (OSError, ValueError, LookupError):
+                continue
+        event.update(
+            is_ally=bool(reader.read_u32(address + 0x18) & 0xFF),
+            skill_id=reader.read_i32(address + 0x1C),
+            from_unique_id=reader.read_u32(address + 0x20),
+            from_card_id=reader.read_i32(address + 0x24),
+            from_card_style_id=reader.read_i32(address + 0x28),
+            targets=targets,
+            is_super_evolve=bool(reader.read_u32(address + 0x38) & 0xFF),
+        )
+    elif name == "BattleResponseSkillEffectPrev":
+        event.update(
+            is_ally=bool(reader.read_u32(address + 0x18) & 0xFF),
+            skill_ids=_event_int_values(reader, reader.read_u64(address + 0x20), maximum=MAX_CARD_COUNTERS),
+            unique_id=reader.read_u32(address + 0x28),
+            card_id=reader.read_i32(address + 0x2C),
+            style_id=reader.read_i32(address + 0x30),
+            is_evolved=bool(reader.read_u32(address + 0x34) & 0xFF),
+            effect=reader.read_i32(address + 0x38),
+            sub_effect=reader.read_i32(address + 0x3C),
+            crest_card_id=reader.read_i32(address + 0x40),
+            extra_crest_card_id=reader.read_i32(address + 0x44),
+            is_induction=bool(reader.read_u32(address + 0x48) & 0xFF),
+        )
+    elif name == "BattleResponseBattleEnd":
+        result_codes = _read_i32_array(
+            reader, reader.read_u64(address + 0x18), maximum=MAX_PLAYERS,
+        )
+        heal_address = reader.read_u64(address + 0x20)
+        heal_result: dict[str, object] | None = None
+        if heal_address:
+            try:
+                heal_result = {
+                    "is_executed": bool(reader.read_u32(heal_address + 0x10) & 0xFF),
+                    "healed": reader.read_i32(heal_address + 0x14),
+                    "battle_start_max_life": reader.read_i32(heal_address + 0x18),
+                }
+            except (OSError, ValueError, LookupError):
+                heal_result = None
+        event.update(result_codes=list(result_codes), heal_result=heal_result)
+    elif name == "BattleResponseAddCrest":
+        event.update(
+            is_ally=bool(reader.read_u32(address + 0x18) & 0xFF),
+            card_id=reader.read_i32(address + 0x1C),
+            unique_id=reader.read_u32(address + 0x20),
+            countdown=reader.read_i32(address + 0x24),
+            skill_id=reader.read_i32(address + 0x28),
+            faith_value=reader.read_i32(address + 0x2C),
+            is_super_evolve=bool(reader.read_u32(address + 0x30) & 0xFF),
+            style_id=reader.read_i32(address + 0x34),
+            is_battle_start=bool(reader.read_u32(address + 0x38) & 0xFF),
+        )
+    elif name in {"BattleResponseCantAddCrest", "BattleResponseCantAddExtraCrest"}:
+        event.update(
+            is_ally=bool(reader.read_u32(address + 0x18) & 0xFF),
+            card_id=reader.read_i32(address + 0x1C),
+        )
+    elif name == "BattleResponseAddExtraCrest":
+        event.update(
+            is_ally=bool(reader.read_u32(address + 0x18) & 0xFF),
+            card_id=reader.read_i32(address + 0x1C),
+            unique_id=reader.read_u32(address + 0x20),
+            countdown=reader.read_i32(address + 0x24),
+            skill_id=reader.read_i32(address + 0x28),
+            is_super_evolve=bool(reader.read_u32(address + 0x2C) & 0xFF),
+            style_id=reader.read_i32(address + 0x30),
+            is_battle_start=bool(reader.read_u32(address + 0x34) & 0xFF),
+        )
+    elif name == "BattleResponseChangeExtraCrestCount":
+        event.update(
+            targets=_event_scalar_targets(
+                reader, reader.read_u64(address + 0x18), kind="extra_count", maximum=MAX_CRESTS,
+            ),
+            is_super_evolve=bool(reader.read_u32(address + 0x20) & 0xFF),
+        )
+    elif name == "BattleResponseRemoveExtraCrest":
+        event.update(
+            targets=_event_scalar_targets(
+                reader, reader.read_u64(address + 0x18), kind="remove_extra", maximum=MAX_CRESTS,
+            ),
+            is_banish=bool(reader.read_u32(address + 0x20) & 0xFF),
+        )
+    elif name == "BattleResponseRemoveCrest":
+        event.update(
+            targets=_event_scalar_targets(
+                reader, reader.read_u64(address + 0x18), kind="remove_crest", maximum=MAX_CRESTS,
+            ),
+            is_banish=bool(reader.read_u32(address + 0x20) & 0xFF),
+        )
+    elif name == "BattleResponseReinforceFaith":
+        event.update(
+            is_ally=bool(reader.read_u32(address + 0x18) & 0xFF),
+            card_id=reader.read_i32(address + 0x1C),
+        )
+    elif name == "BattleResponseChangeLeaderAreaCount":
+        event.update(
+            targets=_event_scalar_targets(
+                reader, reader.read_u64(address + 0x18), kind="change_leader", maximum=MAX_CRESTS,
+            ),
+            is_super_evolve=bool(reader.read_u32(address + 0x20) & 0xFF),
+        )
+    elif name == "BattleResponseAffectDeck":
+        event.update(
+            is_ally=bool(reader.read_u32(address + 0x18) & 0xFF),
+            skill_id=reader.read_i32(address + 0x1C),
+        )
+    elif name == "BattleResponseSetStatusLeader":
+        event.update(
+            targets=_event_scalar_targets(
+                reader, reader.read_u64(address + 0x18), kind="leader_status", maximum=MAX_PLAYERS,
+            ),
+            skill_running_number=reader.read_u32(address + 0x20),
+        )
+    elif name == "BattleResponseStack":
+        event.update(
+            is_ally=bool(reader.read_u32(address + 0x18) & 0xFF),
+            unique_id=reader.read_u32(address + 0x1C),
+            card_id=reader.read_i32(address + 0x20),
+            style_id=reader.read_i32(address + 0x24),
+            stack=reader.read_i32(address + 0x28),
+            add=reader.read_i32(address + 0x2C),
+            skill_id=reader.read_i32(address + 0x30),
+            is_super_evolve=bool(reader.read_u32(address + 0x34) & 0xFF),
+            is_destroy=bool(reader.read_u32(address + 0x35) & 0xFF),
+        )
+    elif name == "BattleResponseContentUhT9MJ":
+        # The generated class name is present in the protocol (it represents
+        # a card content counter update).  Keep the opaque counter instead of
+        # reducing this response to the generic unknown-event bucket.
+        event.update(
+            is_ally=bool(reader.read_u32(address + 0x18) & 0xFF),
+            unique_id=reader.read_u32(address + 0x1C),
+            card_id=reader.read_i32(address + 0x20),
+            style_id=reader.read_i32(address + 0x24),
+            content=reader.read_i32(address + 0x28),
+            add=reader.read_i32(address + 0x2C),
+            skill_id=reader.read_i32(address + 0x30),
+            is_super_evolve=bool(reader.read_u32(address + 0x34) & 0xFF),
+            is_destroy=bool(reader.read_u32(address + 0x35) & 0xFF),
+        )
+    elif name == "BattleResponsePushDeck":
+        event.update(
+            targets=_event_scalar_targets(
+                reader, reader.read_u64(address + 0x18), kind="push_deck", maximum=MAX_HAND_CARDS,
+            ),
+            is_ally=bool(reader.read_u32(address + 0x20) & 0xFF),
+            skill_id=reader.read_i32(address + 0x24),
+            is_super_evolve=bool(reader.read_u32(address + 0x28) & 0xFF),
+        )
+    elif name == "BattleResponsePushDeckHide":
+        event.update(
+            push_num=reader.read_i32(address + 0x18),
+            is_ally=bool(reader.read_u32(address + 0x1C) & 0xFF),
+            skill_id=reader.read_i32(address + 0x20),
+            is_super_evolve=bool(reader.read_u32(address + 0x24) & 0xFF),
+        )
+    elif name == "BattleResponseReplaceDeck":
+        event.update(
+            is_ally=bool(reader.read_u32(address + 0x18) & 0xFF),
+            deck_count=reader.read_i32(address + 0x1C),
+            skill_id=reader.read_i32(address + 0x20),
+        )
+    elif name in {"BattleResponseAddPlayCount", "BattleResponseAddCemeteryCount"}:
+        event.update(
+            is_ally=bool(reader.read_u32(address + 0x18) & 0xFF),
+            add=reader.read_i32(address + 0x1C),
+            skill_id=reader.read_i32(address + 0x20),
+        )
+    elif name == "BattleResponseEmote":
+        event.update(
+            is_ally=bool(reader.read_u32(address + 0x18) & 0xFF),
+            emote_type=reader.read_i32(address + 0x1C),
+            timing=reader.read_i32(address + 0x20),
+        )
+    elif name == "BattleResponseAddSkyboundArtCount":
+        event.update(
+            targets=_event_scalar_targets(
+                reader, reader.read_u64(address + 0x18), kind="skybound", maximum=MAX_PLAYERS,
+            ),
+            from_super_evolve_boost_skill=bool(reader.read_u32(address + 0x20) & 0xFF),
+        )
+    elif name == "BattleResponseRandomAllocate":
+        event.update(
+            is_ally=bool(reader.read_u32(address + 0x18) & 0xFF),
+            card_id=reader.read_i32(address + 0x1C),
+            style_id=reader.read_i32(address + 0x20),
+            values=list(_read_i32_array(reader, reader.read_u64(address + 0x28), maximum=MAX_FIELD_CARDS + MAX_HAND_CARDS)),
+            skill_id=reader.read_i32(address + 0x30),
+        )
+    elif name == "BattleResponseSetStatusField":
+        event.update(
+            skill_id=reader.read_i32(address + 0x18),
+            targets=_event_target_summaries(reader, reader.read_u64(address + 0x20), kind="field_status"),
+            is_set=bool(reader.read_u32(address + 0x28) & 0xFF),
+        )
+    elif name == "BattleResponseSetStatusHand":
+        event.update(
+            skill_id=reader.read_i32(address + 0x18),
+            targets=_event_target_summaries(reader, reader.read_u64(address + 0x20), kind="hand_status"),
+            is_super_evolve=bool(reader.read_u32(address + 0x28) & 0xFF),
+            is_spell_boost=bool(reader.read_u32(address + 0x29) & 0xFF),
+            is_reset=bool(reader.read_u32(address + 0x2A) & 0xFF),
+        )
+    elif name == "BattleResponseAttachSkillField":
+        event.update(
+            targets=_event_scalar_targets(
+                reader, reader.read_u64(address + 0x18), kind="attach_field", maximum=MAX_FIELD_CARDS,
+            ),
+            skill_id=reader.read_i32(address + 0x20),
+        )
+    elif name == "BattleResponseAttachSkillHand":
+        event.update(
+            targets=_event_scalar_targets(
+                reader, reader.read_u64(address + 0x18), kind="attach_hand", maximum=MAX_HAND_CARDS,
+            ),
+            skill_id=reader.read_i32(address + 0x20),
+        )
+    elif name == "BattleResponseAttachSkillLeaderArea":
+        event.update(
+            targets=_event_scalar_targets(
+                reader, reader.read_u64(address + 0x18), kind="attach_leader", maximum=MAX_PLAYERS,
+            ),
+            skill_id=reader.read_i32(address + 0x20),
+        )
+    elif name == "BattleResponseAttachSkillExtraCrestArea":
+        event.update(
+            targets=_event_scalar_targets(
+                reader, reader.read_u64(address + 0x18), kind="attach_extra", maximum=MAX_CRESTS,
+            ),
+            skill_id=reader.read_i32(address + 0x20),
+        )
+    elif name == "BattleResponseHandToken":
+        event.update(
+            cards=_event_cards(reader, reader.read_u64(address + 0x18), field=False, maximum=MAX_HAND_CARDS),
+            add_num=reader.read_i32(address + 0x20),
+            is_ally=bool(reader.read_u32(address + 0x24) & 0xFF),
+            is_open=bool(reader.read_u32(address + 0x25) & 0xFF),
+            skill_id=reader.read_i32(address + 0x28),
+            is_super_evolve=bool(reader.read_u32(address + 0x2C) & 0xFF),
+        )
+    elif name == "BattleResponseRemoveCard":
+        event.update(
+            act_card_unique_id=reader.read_u32(address + 0x18),
+            act_card_id=reader.read_i32(address + 0x1C),
+            targets=_event_target_summaries(reader, reader.read_u64(address + 0x20), kind="remove"),
+            skill_id=reader.read_i32(address + 0x28),
+            is_skill_destroy_or_banish=bool(reader.read_u32(address + 0x2C) & 0xFF),
+            act_card_style_id=reader.read_i32(address + 0x30),
+            is_super_evolve=bool(reader.read_u32(address + 0x34) & 0xFF),
+        )
+    elif name in {
+        "BattleResponseActivateGuard", "BattleResponseActivateQuick",
+        "BattleResponseActivateRush", "BattleResponseActivateSneak",
+        "BattleResponseActivateTempShield",
+        "BattleResponseActivateCantAttack", "BattleResponseActivateCantBeAttack",
+        "BattleResponseActivateCantSelect", "BattleResponseActivateKiller",
+        "BattleResponseActivateDrain", "BattleResponseActivateDamageCut",
+        "BattleResponseActivateCantDestroy",
+    }:
+        # These keyword effects share the same response layout in the 1.9.x
+        # client.  Keeping the source event name lets a trainer distinguish
+        # guard/rush/etc. while the common fields provide the actor identity.
+        event.update(
+            unique_id=reader.read_u32(address + 0x18),
+            card_id=reader.read_i32(address + 0x1C),
+            is_evolved=bool(reader.read_u32(address + 0x20) & 0xFF),
+            is_active=bool(reader.read_u32(address + 0x21) & 0xFF),
+            is_ally=bool(reader.read_u32(address + 0x22) & 0xFF),
+            skill_id=reader.read_i32(address + 0x24),
+            style_id=reader.read_i32(address + 0x28),
+            is_changed_ability=bool(reader.read_u32(address + 0x2C) & 0xFF),
+        )
+    elif name == "BattleResponseActivateLastword":
+        event.update(
+            unique_id=reader.read_u32(address + 0x18),
+            card_id=reader.read_i32(address + 0x1C),
+            style_id=reader.read_i32(address + 0x20),
+            is_ally=bool(reader.read_u32(address + 0x24) & 0xFF),
+            is_active=bool(reader.read_u32(address + 0x25) & 0xFF),
+            skill_id=reader.read_i32(address + 0x28),
+        )
+    elif name in {"BattleResponseActivateLostSkill", "BattleResponseRemoveGuard"}:
+        # Lost-skill/remove-guard use the same compact identity and place the
+        # evolved/ally flags at the same offsets.
+        event.update(
+            unique_id=reader.read_u32(address + 0x18),
+            card_id=reader.read_i32(address + 0x1C),
+            style_id=reader.read_i32(address + 0x20),
+            is_evolved=bool(reader.read_u32(address + 0x24) & 0xFF),
+            is_ally=bool(reader.read_u32(address + 0x25) & 0xFF),
+            skill_id=reader.read_i32(address + 0x28),
+        )
+    elif name in {
+        "BattleResponseActivateActivation", "BattleResponseActivateInduction",
+        "BattleResponseActivateRemoveFieldAtTurnChange", "BattleResponseActivateSuperEvolveBuff",
+    }:
+        event.update(
+            unique_id=reader.read_u32(address + 0x18),
+            is_active=bool(reader.read_u32(address + 0x1C) & 0xFF),
+        )
+    elif name in {
+        "BattleResponseActivateKakusei", "BattleResponseActivateCantFanfareAndEnhanceAllyFollower",
+    }:
+        event.update(
+            is_ally=bool(reader.read_u32(address + 0x18) & 0xFF),
+            is_active=bool(reader.read_u32(address + 0x19) & 0xFF),
+        )
+    elif name == "BattleResponseSetDeckOutWin":
+        event.update(
+            is_ally=bool(reader.read_u32(address + 0x18) & 0xFF),
+            is_active=bool(reader.read_u32(address + 0x19) & 0xFF),
+            skill_id=reader.read_i32(address + 0x1C),
+        )
+    elif name == "BattleResponseStartSelect":
+        response = reader.read_u64(address + 0x18)
+        event.update(
+            source_unique_id=reader.read_u32(response + 0x10) if response else 0,
+            select_mode=reader.read_i32(response + 0x14) if response else 0,
+            select_type=reader.read_i32(response + 0x18) if response else 0,
+            select_client_id=reader.read_u64(response + 0x20) if response else 0,
+            select_sequence=reader.read_i32(response + 0x28) if response else 0,
+        )
+    elif name == "BattleResponseDecideSelect":
+        response = reader.read_u64(address + 0x18)
+        decide_ids = _event_int_values(reader, reader.read_u64(response + 0x18), maximum=MAX_CARD_COUNTERS) if response else []
+        event.update(
+            decide_card=reader.read_u32(response + 0x10) if response else 0,
+            decide_ids=decide_ids,
+            decide_bool=bool(reader.read_u32(response + 0x20) & 0xFF) if response else False,
+        )
+    elif name == "BattleResponseCancelSelect":
+        event["cancelled"] = True
+    elif name == "BattleResponseSendArrow":
+        response = reader.read_u64(address + 0x18)
+        event.update(
+            arrow_type=reader.read_i32(response + 0x18) if response else 0,
+            target_unique_ids=(
+                _event_int_values(
+                    reader, reader.read_u64(response + 0x20),
+                    maximum=MAX_FIELD_CARDS + MAX_HAND_CARDS + 2,
+                ) if response else []
+            ),
+        )
+    elif name == "BattleResponseSendTouchCard":
+        response = reader.read_u64(address + 0x18)
+        event["card_unique_id"] = reader.read_u32(response + 0x18) if response else 0
+    elif name == "BattleResponseTurnTimerStart":
+        response = reader.read_u64(address + 0x18)
+        event["turn"] = reader.read_i32(response + 0x18) if response else 0
+    elif name == "BattleResponseMulliganSelect":
+        response = reader.read_u64(address + 0x18)
+        changed = (
+            _event_int_values(reader, reader.read_u64(response + 0x18), maximum=MAX_HAND_CARDS)
+            if response else []
+        )
+        event.update(
+            change_card_unique_ids=changed,
+            replaced_count=len(changed),
         )
     elif name == "BattleResponsePlayHide":
         # The object may contain a resolved card internally. Never expose it here.
-        event.update(hidden=True, play_kind=reader.read_i32(address + 0x20))
+        event.update(
+            hidden=True,
+            play_kind=reader.read_i32(address + 0x20),
+            after_play_card_id=reader.read_i32(address + 0x24),
+            after_play_card_style_id=reader.read_i32(address + 0x28),
+        )
     return event
 
 
@@ -1060,7 +2117,7 @@ def read_battle_model(
                 collection,
                 maximum=MAX_HISTORY_ITEMS,
             )
-        except (OSError, ValueError):
+        except (OSError, ValueError, LookupError):
             continue
         for response_address in addresses:
             if response_address and response_address not in response_addresses:
@@ -1083,8 +2140,26 @@ def read_battle_model(
         # Root state remains useful if ancillary BattleInfo has already been released.
         pass
     battle_root = read_battle_root(reader, root_address) if root_address else None
-    events = [_read_battle_event(reader, event) for event in response_addresses if event]
-    mulligan_selection = _read_mulligan_selection_response(reader, address, battle_root)
+    # A response can be released between the two collection reads above.  A
+    # stale pointer must not make the complete board snapshot unreadable (and
+    # consequently lose the match record); skip only that response and keep
+    # the root/state checkpoint.
+    events: list[dict[str, object]] = []
+    for response_address in response_addresses:
+        if not response_address:
+            continue
+        try:
+            events.append(_read_battle_event(reader, response_address))
+        except (OSError, ValueError, LookupError, IndexError, TypeError):
+            continue
+    try:
+        mulligan_selection = _read_mulligan_selection_response(reader, address, battle_root)
+    except (OSError, ValueError, LookupError, IndexError, TypeError):
+        # The persistent selection response is replaced immediately after the
+        # mulligan animation.  Treat a released pointer like any other missed
+        # response; the root checkpoint and the transient event stream remain
+        # usable for the rest of the match.
+        mulligan_selection = None
     if mulligan_selection is not None:
         events.append(mulligan_selection)
     public_root = (
