@@ -21,6 +21,9 @@
 - 可选加载同级 `LethalCalculator`，实时显示确认/概率/不完整斩杀路线、合法模式与
   `AttackTargets`；无法斩杀时显示当前回合最高理论伤害。缺少计算器目录时记牌器仍
   可独立运行，可通过 `SHADOWVERSE_LETHAL_ROOT` 指定目录。
+- 可选使用 SWB-RL 规则的影子斩杀后端。设置 `SHADOWVERSE_LETHAL_BACKEND=swb_rl_shadow`
+  和 `SHADOWVERSE_SWB_RL_ROOT=D:\Github\SWB-RL` 后启动 Tracker；它只水合公开快照，
+  隐藏手牌、牌库顺序等缺口会明确显示为 `INCOMPLETE`。
 
 ## 牌组管理
 
