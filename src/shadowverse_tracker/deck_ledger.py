@@ -122,17 +122,124 @@ class DeckLedger:
         return values
 
     @staticmethod
-    def _has_token_creation(snapshot: dict[str, object]) -> bool:
-        """Whether this response batch explicitly created a token.
+    def _token_field_uids(snapshot: dict[str, object]) -> tuple[set[int], bool]:
+        """Return token-created field UIDs and whether token provenance is unknown.
 
-        A generated token can share the exact ID of a real deck card.  It must
-        never be used as evidence that the deck supplied that card.
+        A response batch can contain both a generated token and a real
+        ``PutCardFromDeck`` result.  The old all-or-nothing check discarded
+        every field candidate whenever *any* token response was present, so a
+        genuine direct summon in that batch was never charged to the ledger.
+        When the decoder supplies target UIDs, exclude only those cards.  If a
+        token response has no target list (for example an older client or a
+        card that vanished between polls), retain the conservative behaviour
+        and do not infer any field card from that batch.
         """
         events = snapshot.get("events", ())
-        return isinstance(events, (list, tuple)) and any(
-            isinstance(event, dict) and event.get("type") == "BattleResponsePutToken"
-            for event in events
-        )
+        if not isinstance(events, (list, tuple)):
+            return set(), False
+        token_uids: set[int] = set()
+        unknown = False
+        for event in events:
+            if not isinstance(event, dict) or event.get("type") != "BattleResponsePutToken":
+                continue
+            targets = event.get("targets")
+            found_target = False
+            if isinstance(targets, (list, tuple)):
+                for target in targets:
+                    if not isinstance(target, dict):
+                        continue
+                    uid = target.get("unique_id")
+                    if isinstance(uid, int) and uid > 0:
+                        token_uids.add(uid)
+                        found_target = True
+            if not found_target:
+                unknown = True
+        # Some client builds expose the provenance directly on the public
+        # FieldCard even after the short-lived PutToken response has expired.
+        # ``IsSameNameToken`` is particularly important for a generated card
+        # whose ID also exists in the selected deck (for example 天晶魔手).
+        # Treat that flag as stronger evidence than field appearance, while a
+        # missing UID remains conservative and keeps the batch unidentified.
+        mine = DeckLedger._mine(snapshot)
+        field = mine.get("field") if isinstance(mine, dict) else None
+        if isinstance(field, (list, tuple)):
+            for card in field:
+                if not isinstance(card, dict) or card.get("is_same_name_token") is not True:
+                    continue
+                uid = card.get("unique_id")
+                if isinstance(uid, int) and uid > 0:
+                    token_uids.add(uid)
+                else:
+                    unknown = True
+        return token_uids, unknown
+
+    @staticmethod
+    def _token_hand_uids(snapshot: dict[str, object]) -> tuple[set[int], bool]:
+        """Return hand UIDs created by ``HandToken`` responses.
+
+        A generated copy can enter the hand before it is played.  Its card ID
+        may be identical to a real deck card, so treating every visible hand
+        card as a deck draw would silently lower the wrong ledger row.
+        """
+        events = snapshot.get("events", ())
+        if not isinstance(events, (list, tuple)):
+            return set(), False
+        token_uids: set[int] = set()
+        unknown = False
+        for event in events:
+            if not isinstance(event, dict) or event.get("type") != "BattleResponseHandToken":
+                continue
+            values = event.get("cards") or event.get("targets")
+            found = False
+            if isinstance(values, (list, tuple)):
+                for value in values:
+                    card = value.get("card") if isinstance(value, dict) and isinstance(value.get("card"), dict) else value
+                    if not isinstance(card, dict):
+                        continue
+                    uid = card.get("unique_id")
+                    if isinstance(uid, int) and uid > 0:
+                        token_uids.add(uid)
+                        found = True
+            if not found and bool(event.get("is_ally")):
+                unknown = True
+        return token_uids, unknown
+
+    @staticmethod
+    def _direct_deck_field_provenance(
+        snapshot: dict[str, object],
+    ) -> tuple[set[int], Counter[int]]:
+        """Return field UIDs/card IDs explicitly reported as deck summons.
+
+        This is only used when a neighbouring ``PutToken`` response has no
+        target UID.  In that case the token cannot safely be matched to a
+        visible field card, but an explicit ``PutCardFromDeck`` target remains
+        strong evidence and should not be discarded with the old batch-wide
+        token guard.
+        """
+        events = snapshot.get("events", ())
+        if not isinstance(events, (list, tuple)):
+            return set(), Counter()
+        uids: set[int] = set()
+        card_counts: Counter[int] = Counter()
+        for event in events:
+            if not isinstance(event, dict) or event.get("type") != "BattleResponsePutCardFromDeck":
+                continue
+            values = event.get("cards") or event.get("targets")
+            if not values and isinstance(event.get("card"), dict):
+                values = [event["card"]]
+            if not isinstance(values, (list, tuple)):
+                continue
+            for value in values:
+                card = value.get("card") if isinstance(value, dict) and isinstance(value.get("card"), dict) else value
+                if not isinstance(card, dict):
+                    continue
+                uid = card.get("unique_id")
+                card_id = card.get("base_card_id") or card.get("card_id")
+                if isinstance(uid, int) and uid > 0:
+                    uids.add(uid)
+                if isinstance(card_id, int) and card_id > 0:
+                    card_counts[card_id] += 1
+        return uids, card_counts
 
     def update(self, snapshot: dict[str, object]) -> dict[str, object]:
         mine = self._mine(snapshot)
@@ -153,12 +260,15 @@ class DeckLedger:
 
         candidates: list[tuple[int, int]] = []
         candidates.extend(self._draw_cards(snapshot))
+        token_hand_uids, unknown_hand_token = self._token_hand_uids(snapshot)
+        visible_hand = self._visible_cards(mine, ("hand",))
+        if not unknown_hand_token:
+            candidates.extend((uid, card_id) for uid, card_id in visible_hand if uid not in token_hand_uids)
 
         if self._last_deck_count is None:
             # Current hand cards and play history do not overlap.  A current
             # field card usually also occurs in play history, so including the
             # field here would double-charge it when the tracker starts midgame.
-            candidates.extend(self._visible_cards(mine, ("hand",)))
             history = mine.get("played_card_ids", ())
             if isinstance(history, (list, tuple)):
                 for index, item in enumerate(history):
@@ -169,12 +279,36 @@ class DeckLedger:
             # newly observed field UID is useful evidence.  Consume public
             # draws and hand cards first; ``capacity`` below guarantees that
             # the named rows never exceed the authoritative deck decrease.
-            candidates.extend(self._visible_cards(mine, ("hand",)))
+            # ``HandToken`` cards are generated and must not consume the
+            # selected deck.  If the response omitted all target UIDs, avoid
+            # guessing any visible hand card from that batch.
             # ``PutToken`` is the explicit provenance signal for generated
             # cards.  In particular, 希姆 can create 天晶魔手 with the same ID as
-            # a real deck card.  Do not let that token consume deck inventory.
-            if not self._has_token_creation(snapshot):
-                candidates.extend(self._visible_cards(mine, ("field",)))
+            # a real deck card.  Exclude only token UIDs when the response
+            # identifies them, while still allowing a direct deck summon in
+            # the same response batch to consume its named row.
+            token_uids, unknown_token_provenance = self._token_field_uids(snapshot)
+            field_cards = self._visible_cards(mine, ("field",))
+            if not unknown_token_provenance:
+                candidates.extend((uid, card_id) for uid, card_id in field_cards if uid not in token_uids)
+            else:
+                # If the token response is incomplete, use only the cards
+                # explicitly named by a direct deck summon.  This preserves
+                # the safe behavior for an unknown token while allowing a
+                # direct summon in the same response batch to decrement the
+                # selected deck's named row.
+                direct_uids, direct_card_counts = self._direct_deck_field_provenance(snapshot)
+                for uid, card_id in field_cards:
+                    if uid in direct_uids:
+                        candidates.append((uid, card_id))
+                        if direct_card_counts.get(card_id, 0) > 0:
+                            direct_card_counts[card_id] -= 1
+                for uid, card_id in field_cards:
+                    if uid in direct_uids:
+                        continue
+                    if direct_card_counts.get(card_id, 0) > 0:
+                        candidates.append((uid, card_id))
+                        direct_card_counts[card_id] -= 1
 
         capacity = max(0, target_removed - self.identified_removed)
         for uid, card_id in candidates:

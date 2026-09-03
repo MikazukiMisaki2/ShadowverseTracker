@@ -62,6 +62,26 @@ class TrainingMulliganTests(unittest.TestCase):
         service._update_training_observation(snapshot, players)
         self.assertEqual(players[1]["mulligan_summary"]["replaced_count"], 3)
 
+    def test_mulligan_response_with_new_managed_address_is_not_counted_twice(self) -> None:
+        service = TrackerService(TrackerConfig(), on_snapshot=lambda _snapshot: None)
+        players = [{"hand": [], "turn": 0}, {"hand": [], "turn": 0}]
+        first = {
+            "events": [{
+                "address": "0x1", "type": "BattleResponseMulligan", "sequence": 0,
+                "is_ally": False, "change_card_flags": 7,
+            }]
+        }
+        second = {
+            "events": [{
+                "address": "0x2", "type": "BattleResponseMulligan", "sequence": 0,
+                "is_ally": False, "change_card_flags": 7,
+            }]
+        }
+        service._update_training_observation(first, players)
+        service._update_training_observation(second, players)
+        self.assertEqual(len(first["training_observation"]["mulligan"]["events"]), 1)
+        self.assertEqual(second["training_observation"]["mulligan"]["opponent_replaced_count"], 3)
+
     def test_t1_draw_is_separated_from_three_mulligan_replacements(self) -> None:
         service = TrackerService(TrackerConfig(), on_snapshot=lambda _snapshot: None)
         initial = [

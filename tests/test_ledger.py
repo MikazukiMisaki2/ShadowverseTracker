@@ -82,6 +82,36 @@ class DeckLedgerTests(unittest.TestCase):
         self.assertEqual(value["identified_removed"], 0)
         self.assertEqual(value["unknown_removed"], 1)
 
+    def test_public_token_flag_does_not_reduce_ledger_after_response_expires(self) -> None:
+        ledger = DeckLedger(self.deck)
+        ledger.update(snapshot(40, []))
+        value = ledger.update(snapshot(
+            39,
+            [],
+            field=[{
+                "unique_id": 90,
+                "base_card_id": 10000010,
+                "is_same_name_token": True,
+            }],
+        ))
+        self.assertEqual(value["identified_removed"], 0)
+        self.assertEqual(value["unknown_removed"], 1)
+
+    def test_generated_hand_token_does_not_reduce_ledger(self) -> None:
+        ledger = DeckLedger(self.deck)
+        ledger.update(snapshot(40, []))
+        value = ledger.update(snapshot(
+            39,
+            [{"unique_id": 91, "base_card_id": 10000010}],
+            events=[{
+                "type": "BattleResponseHandToken",
+                "is_ally": True,
+                "cards": [{"unique_id": 91, "base_card_id": 10000010}],
+            }],
+        ))
+        self.assertEqual(value["identified_removed"], 0)
+        self.assertEqual(value["unknown_removed"], 1)
+
     def test_direct_deck_summon_on_field_reduces_its_named_row(self) -> None:
         ledger = DeckLedger(self.deck)
         ledger.update(snapshot(40, []))
@@ -89,6 +119,32 @@ class DeckLedgerTests(unittest.TestCase):
             39,
             [],
             field=[{"unique_id": 91, "base_card_id": 10000010}],
+        ))
+        row = next(row for row in value["rows"] if row["card_id"] == 10000010)
+        self.assertEqual(row["remaining"], 0)
+        self.assertEqual(value["identified_removed"], 1)
+
+    def test_incomplete_token_does_not_hide_explicit_direct_deck_summon(self) -> None:
+        ledger = DeckLedger(self.deck)
+        ledger.update(snapshot(40, []))
+        value = ledger.update(snapshot(
+            38,
+            [],
+            events=[
+                # Older clients may omit the transient token target list.
+                {"type": "BattleResponsePutToken", "is_ally": True},
+                {
+                    "type": "BattleResponsePutCardFromDeck",
+                    "is_ally": True,
+                    "cards": [{"unique_id": 91, "base_card_id": 10000010}],
+                },
+            ],
+            field=[
+                # Put the generated card first to exercise UID-first
+                # provenance instead of relying on field ordering.
+                {"unique_id": 90, "base_card_id": 10000010},
+                {"unique_id": 91, "base_card_id": 10000010},
+            ],
         ))
         row = next(row for row in value["rows"] if row["card_id"] == 10000010)
         self.assertEqual(row["remaining"], 0)

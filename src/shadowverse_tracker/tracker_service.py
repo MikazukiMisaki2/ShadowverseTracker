@@ -23,6 +23,12 @@ from .memory.win32 import ProcessReader, find_process
 from .opponent_hand import OpponentKnownHand
 from .card_catalog import canonical_card_id
 from .match_history import result_label
+from .training_data import (
+    TrainingMatchRecorder,
+    TrainingUploadQueue,
+    compact_event_records,
+    default_upload_queue_path,
+)
 from .versioning import verify_process_version
 
 
@@ -36,6 +42,14 @@ class TrackerConfig:
     selected_deck: DeckInfoSnapshot | None = None
     selected_deck_key: str | None = None
     reveal_opponent_hand: bool = True
+    # The compact per-match stream is independent from the optional local
+    # win/loss history.  ``None`` disables the file but the in-memory recorder
+    # still remains available to callers that inspect snapshots.
+    training_output_path: Path | None = None
+    training_upload_queue_path: Path | None = None
+    training_upload_url: str | None = None
+    training_upload_enabled: bool = False
+    training_upload_token: str | None = None
 
 
 def without_addresses(value: object) -> object:
@@ -76,6 +90,7 @@ class TrackerService:
         self._thread: threading.Thread | None = None
         self._previous: object | None = None
         self._output_handle = None
+        self._training_output_handle = None
         self._pid: int | None = None
         self._model_address = config.model_address
         self._battle_root_address = 0
@@ -110,16 +125,40 @@ class TrackerService:
         self._last_self_hand_uids: set[int] | None = None
         self._self_draw_history: list[dict[str, object]] = []
         self._seen_self_draw_event_tokens: set[tuple[object, ...]] = set()
+        self._training_ui_event_history: list[list[dict[str, object]]] = [[], []]
+        self._seen_training_ui_event_tokens: set[tuple[object, ...]] = set()
+        # The UI can switch decks while the polling thread is emitting a
+        # snapshot.  Keep recorder finalization and ingestion atomic so a
+        # record can never contain half of two deck boundaries.
+        self._training_lock = threading.RLock()
+        self._training_recorder = TrainingMatchRecorder()
+        self._training_match_finished = False
+        self._training_upload = (
+            TrainingUploadQueue(
+                config.training_upload_queue_path or default_upload_queue_path(),
+                endpoint=config.training_upload_url,
+                enabled=config.training_upload_enabled,
+                token=config.training_upload_token,
+            )
+            if config.training_upload_url or config.training_upload_queue_path
+            else None
+        )
 
     def set_selected_deck(self, deck: DeckInfoSnapshot | None, deck_key: str | None = None) -> None:
         """Switch the local ledger without interrupting battle-state polling."""
         with self._deck_lock:
             if self._selected_deck == deck:
                 return
+        # A deck change is a new provenance boundary for training data.  Do
+        # not let the tail of a game played with the old deck get attached to
+        # the newly selected list.
+        self._finish_training_match(complete=False)
+        with self._deck_lock:
             self._selected_deck = deck
             self._selected_deck_key = deck_key
             self._ledger = DeckLedger(deck) if deck else None
             self._previous = None
+            self._reset_match_observation_state()
         if self.on_deck:
             self.on_deck(deck.to_dict() if deck else {})
         if self.on_status:
@@ -144,9 +183,78 @@ class TrackerService:
         if self._thread is not None:
             self._thread.join(timeout=timeout)
         self._thread = None
+        # Preserve a partially observed game as a replayable record when the
+        # user closes the tracker or reconnects before a terminal response.
+        self._finish_training_match(complete=False)
         if self._output_handle is not None:
             self._output_handle.close()
             self._output_handle = None
+        if self._training_output_handle is not None:
+            self._training_output_handle.close()
+            self._training_output_handle = None
+
+    @staticmethod
+    def _snapshot_result(snapshot: dict[str, object]) -> str:
+        root = snapshot.get("root")
+        players = root.get("players") if isinstance(root, dict) else None
+        if not isinstance(players, (list, tuple)) or len(players) < 2:
+            return "结束"
+        mine, opponent = players[0], players[1]
+        if not isinstance(mine, dict) or not isinstance(opponent, dict):
+            return "结束"
+        result_code = mine.get("result_code") if isinstance(mine.get("result_code"), int) else 0
+        return result_label(
+            result_code,
+            mine.get("life") if isinstance(mine.get("life"), int) else None,
+            opponent.get("life") if isinstance(opponent.get("life"), int) else None,
+        )
+
+    def _finish_training_match(self, *, complete: bool | None = None) -> None:
+        with self._training_lock:
+            record = self._training_recorder.finish(complete=complete)
+        if record is None:
+            return
+        payload = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+        if self._training_output_handle is not None:
+            try:
+                self._training_output_handle.write(payload + "\n")
+                self._training_output_handle.flush()
+            except OSError:
+                # A diagnostic log must never stop the read-only polling loop.
+                pass
+        if self._training_upload is not None:
+            self._training_upload.enqueue(record)
+
+    def _reset_match_observation_state(self, *, reset_ledger: bool = False) -> None:
+        """Clear all per-match inference state at a deck/model boundary."""
+        if reset_ledger:
+            self._ledger = DeckLedger(self._selected_deck) if self._selected_deck else None
+        self._opponent_known_hand.reset()
+        self._self_action_tracker.reset()
+        self._played_history_lengths = [0, 0]
+        self._played_history_turns = [[], []]
+        self._training_initial_hands = [None, None]
+        self._training_final_hands = [None, None]
+        self._training_initial_self_cards_by_uid = None
+        self._training_final_self_uids = None
+        self._training_self_selected_uids = set()
+        self._training_self_replaced = []
+        self._training_opponent_replaced_count = None
+        self._training_opponent_mulligan_seen = False
+        self._training_mulligan_events = []
+        self._training_seen_event_tokens = set()
+        self._event_play_history = [[], []]
+        self._seen_play_event_tokens = set()
+        self._last_turn = None
+        self._last_result_code = None
+        self._last_self_deck_count = None
+        self._last_self_hand_size = None
+        self._last_self_hand_uids = None
+        self._self_draw_history = []
+        self._seen_self_draw_event_tokens = set()
+        self._training_ui_event_history = [[], []]
+        self._seen_training_ui_event_tokens = set()
+        self._training_match_finished = False
 
     def _emit(self, snapshot: dict[str, object]) -> None:
         root = snapshot.get("root")
@@ -156,9 +264,9 @@ class TrackerService:
             "root": root,
             # LegalActions is not duplicated in the BattleRoot object.  It
             # changes when PP/EP, mode availability, attack targets, or
-            # activation legality changes, so omitting it would suppress the
-            # very refreshes the lethal calculator needs between otherwise
-            # identical board snapshots.
+            # activation legality changes, so omitting it would suppress
+            # meaningful replay checkpoints between otherwise identical
+            # board snapshots.
             "legal_actions": snapshot.get("legal_actions"),
             "current_turn": snapshot.get("current_turn"),
             "deck_ledger": snapshot.get("deck_ledger"),
@@ -168,6 +276,13 @@ class TrackerService:
         if semantic == self._previous:
             return
         self._previous = semantic
+        # Build the compact match stream before handing the snapshot to the UI
+        # callback.  It is intentionally independent of the local match-history
+        # checkbox: training collection is automatic and can be uploaded by an
+        # explicitly configured endpoint.
+        with self._training_lock:
+            if not self._training_match_finished:
+                self._training_recorder.ingest(snapshot)
         record = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "pid": self._pid,
@@ -178,6 +293,11 @@ class TrackerService:
             self._output_handle.write(json.dumps(record, ensure_ascii=False) + "\n")
             self._output_handle.flush()
         self.on_snapshot(snapshot)
+        if self._snapshot_result(snapshot) in {"胜利", "失败"}:
+            with self._training_lock:
+                if not self._training_match_finished:
+                    self._finish_training_match(complete=True)
+                    self._training_match_finished = True
 
     def _attach_deck_state(self, snapshot: dict[str, object]) -> None:
         root = snapshot.get("root")
@@ -200,29 +320,10 @@ class TrackerService:
                     and self._last_result_code not in (None, 0)
                 )
                 if is_new_match:
-                    if self._selected_deck is not None:
-                        self._ledger = DeckLedger(self._selected_deck)
-                    self._opponent_known_hand.reset()
-                    self._self_action_tracker.reset()
-                    self._played_history_lengths = [0, 0]
-                    self._played_history_turns = [[], []]
-                    self._training_initial_hands = [None, None]
-                    self._training_final_hands = [None, None]
-                    self._training_initial_self_cards_by_uid = None
-                    self._training_final_self_uids = None
-                    self._training_self_selected_uids = set()
-                    self._training_self_replaced = []
-                    self._training_opponent_replaced_count = None
-                    self._training_opponent_mulligan_seen = False
-                    self._training_mulligan_events = []
-                    self._training_seen_event_tokens = set()
-                    self._event_play_history = [[], []]
-                    self._seen_play_event_tokens = set()
-                    self._last_self_deck_count = None
-                    self._last_self_hand_size = None
-                    self._last_self_hand_uids = None
-                    self._self_draw_history = []
-                    self._seen_self_draw_event_tokens = set()
+                    # Finalize an unfinished previous game before the first
+                    # snapshot of the new game is attached to the recorder.
+                    self._finish_training_match(complete=False)
+                    self._reset_match_observation_state(reset_ledger=True)
                 self._last_turn = turn if isinstance(turn, int) else self._last_turn
                 self._last_result_code = (
                     result_code if isinstance(result_code, int) else self._last_result_code
@@ -319,7 +420,9 @@ class TrackerService:
                         card_id = card.get("base_card_id") or card.get("card_id")
                         if not isinstance(uid, int) or not isinstance(card_id, int) or card_id <= 0:
                             continue
-                        token = (event.get("address"), event.get("sequence"), uid)
+                        # Response objects may have a new managed address on
+                        # the next poll; sequence + UID remains stable.
+                        token = (event.get("sequence"), uid)
                         if token in self._seen_self_draw_event_tokens:
                             continue
                         if uid not in current_uids and named_burns < burned:
@@ -429,8 +532,11 @@ class TrackerService:
                 fingerprint_token = event.get("selection_fingerprint")
                 if isinstance(fingerprint_token, list):
                     fingerprint_token = tuple(fingerprint_token)
+                # The response address is not stable while the game swaps
+                # animation objects between polls. Use semantic fields so a
+                # repeated snapshot cannot append another mulligan action.
                 token = (
-                    event.get("address"), event.get("type"), event.get("sequence"),
+                    event.get("type"), event.get("sequence"),
                     event.get("is_ally"), event.get("change_card_flags"), fingerprint_token,
                 )
                 if token in self._training_seen_event_tokens:
@@ -549,20 +655,43 @@ class TrackerService:
         if not isinstance(turn, int) or turn <= 0:
             turn = 0
         for event in events:
-            if not isinstance(event, dict) or event.get("type") != "BattleResponsePlayOpen":
+            if not isinstance(event, dict):
                 continue
-            card_id = event.get("card_id")
-            if not isinstance(card_id, int) or card_id <= 0:
+            event_type = str(event.get("type") or "")
+            if event_type == "BattleResponsePlayOpen":
+                card_id = event.get("card_id")
+                if isinstance(card_id, int) and card_id > 0:
+                    token = (event.get("sequence"), card_id, event.get("is_ally"))
+                    if token not in self._seen_play_event_tokens:
+                        self._seen_play_event_tokens.add(token)
+                        side = 0 if bool(event.get("is_ally")) else 1
+                        self._event_play_history[side].append({"turn": turn, "card_id": canonical_card_id(card_id)})
+
+            # Keep a bounded, side-specific copy for the human recent-record
+            # panel.  The authoritative unbounded-per-match copy is written by
+            # TrainingMatchRecorder; this one is only a rendering convenience.
+            fingerprint = json.dumps(
+                without_addresses(event),
+                ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"),
+            )
+            token = (event_type, event.get("sequence"), fingerprint)
+            if token in self._seen_training_ui_event_tokens:
                 continue
-            token = (event.get("address"), event.get("sequence"), card_id, event.get("is_ally"))
-            if token in self._seen_play_event_tokens:
-                continue
-            self._seen_play_event_tokens.add(token)
-            side = 0 if bool(event.get("is_ally")) else 1
-            self._event_play_history[side].append({"turn": turn, "card_id": canonical_card_id(card_id)})
+            self._seen_training_ui_event_tokens.add(token)
+            compact = compact_event_records(event, turn)
+            for item in compact:
+                side = item.get("s") if isinstance(item.get("s"), int) else -1
+                if side not in (0, 1):
+                    continue
+                self._training_ui_event_history[side].append(item)
+                # Prevent an unusually noisy response stream from growing the
+                # UI snapshot indefinitely while retaining enough context for
+                # recent history.
+                del self._training_ui_event_history[side][:-120]
         for index, player in enumerate(players[:2]):
             if isinstance(player, dict):
                 player["_event_played_cards"] = list(self._event_play_history[index])
+                player["_training_events"] = list(self._training_ui_event_history[index])
 
     def _build_training_observation(self, snapshot: dict[str, object], players: list[dict[str, object]]) -> dict[str, object]:
         mine, opponent = players[0], players[1]
@@ -602,6 +731,10 @@ class TrackerService:
                 "opponent_destroyed": [item[0] if isinstance(item, (list, tuple)) and item else item for item in opponent.get("destroyed_card_ids", ())] if isinstance(opponent.get("destroyed_card_ids"), (list, tuple)) else [],
                 "opponent_evolutions": (snapshot.get("opponent_hand_knowledge") or {}).get("recent_evolution_events", []) if isinstance(snapshot.get("opponent_hand_knowledge"), dict) else [],
             },
+            "events": [
+                *self._training_ui_event_history[0],
+                *self._training_ui_event_history[1],
+            ],
             "opponent_hand_knowledge": snapshot.get("opponent_hand_knowledge"),
         }
 
@@ -613,6 +746,17 @@ class TrackerService:
             if self.config.output_path
             else None
         )
+        if self.config.training_output_path:
+            self.config.training_output_path.parent.mkdir(parents=True, exist_ok=True)
+        self._training_output_handle = (
+            self.config.training_output_path.open("a", encoding="utf-8", buffering=1)
+            if self.config.training_output_path
+            else None
+        )
+        # Retry queued records once per reader start.  A failed request leaves
+        # the queue untouched and never blocks game-state polling for long.
+        if self._training_upload is not None:
+            self._training_upload.flush()
         while not self._stop.is_set():
             try:
                 pid = self.config.pid or find_process(self.config.process_name).pid
@@ -641,9 +785,19 @@ class TrackerService:
                                 # still display a trustworthy board snapshot.
                                 roots = find_battle_roots(reader)
                                 if roots:
+                                    # A newly discovered root may belong to a
+                                    # different game after the process or
+                                    # BattleModel was recreated.  Finalize any
+                                    # partial record before changing the
+                                    # connection identity so events can never
+                                    # leak across matches.
+                                    if self._training_recorder.active:
+                                        self._finish_training_match(complete=False)
                                     self._battle_root_address = roots[-1]
                                     self._root_only_mode = True
                                     self._previous = None
+                                    with self._deck_lock:
+                                        self._reset_match_observation_state(reset_ledger=True)
                                     if self.on_status:
                                         self.on_status(
                                             f"已连接解密/教学对局根对象 0x{self._battle_root_address:X}"
@@ -654,6 +808,8 @@ class TrackerService:
                                     self._stop.wait(2.0)
                                     continue
                             else:
+                                if self._training_recorder.active:
+                                    self._finish_training_match(complete=False)
                                 self._model_address = models[-1]
                                 self._battle_root_address = 0
                                 self._root_only_mode = False
@@ -662,12 +818,7 @@ class TrackerService:
                                 self._server_data_next_retry_at = 0.0
                                 self._previous = None
                                 with self._deck_lock:
-                                    self._ledger = (
-                                        DeckLedger(self._selected_deck) if self._selected_deck else None
-                                    )
-                                    self._opponent_known_hand.reset()
-                                    self._last_turn = None
-                                    self._last_result_code = None
+                                    self._reset_match_observation_state(reset_ledger=True)
                                 if self.on_status:
                                     self.on_status(f"已自动连接 0x{self._model_address:X}")
                         try:
