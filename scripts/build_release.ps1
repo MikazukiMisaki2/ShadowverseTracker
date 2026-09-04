@@ -35,7 +35,7 @@ if (-not (Test-Path -LiteralPath $chinaLauncherScript)) {
     throw "未找到国服启动脚本：$chinaLauncherScript"
 }
 
-python -m pip install pyinstaller Pillow
+python -m pip install pyinstaller Pillow PySide6 PySide6-Fluent-Widgets
 
 $arguments = @(
     '--noconfirm',

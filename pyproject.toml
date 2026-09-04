@@ -7,10 +7,14 @@ name = "shadowverse-tracker"
 version = "0.1.0"
 description = "Read-only external tracker for Shadowverse: Worlds Beyond"
 requires-python = ">=3.11"
-dependencies = ["Pillow>=10.0"]
+dependencies = [
+    "Pillow>=10.0",
+    "PySide6>=6.8",
+    "PySide6-Fluent-Widgets>=1.11",
+]
 
 [project.scripts]
-shadowverse-tracker = "shadowverse_tracker.app:main"
+shadowverse-tracker = "shadowverse_tracker.qt_app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
