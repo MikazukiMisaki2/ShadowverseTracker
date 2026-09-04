@@ -463,6 +463,7 @@ class QtTrackerWindow(FluentWindow):
         except (OSError, ValueError) as exc:
             self._history_error = str(exc)
         self._record_matches = True
+        self._set_application_icon()
         self._build_ui()
         self.snapshot_received.connect(self._render_snapshot)
         self.status_received.connect(self._set_status)
@@ -502,6 +503,28 @@ class QtTrackerWindow(FluentWindow):
         layout.setContentsMargins(22, 18, 22, 22)
         layout.setSpacing(12)
         return layout
+
+    @staticmethod
+    def _app_asset_path(name: str) -> Path | None:
+        """Locate an icon in source runs and PyInstaller onedir builds."""
+        package_root = Path(__file__).resolve().parent
+        roots = [package_root / "assets"]
+        frozen_root = getattr(sys, "_MEIPASS", None)
+        if frozen_root:
+            roots.insert(0, Path(frozen_root) / "shadowverse_tracker" / "assets")
+        executable_root = Path(sys.executable).resolve().parent
+        roots.extend((executable_root / "shadowverse_tracker" / "assets", executable_root / "_internal" / "shadowverse_tracker" / "assets"))
+        return next((root / name for root in roots if (root / name).is_file()), None)
+
+    def _set_application_icon(self) -> None:
+        icon_path = self._app_asset_path("kandima_icon.ico") or self._app_asset_path("Kandima_icon.png")
+        if icon_path is None:
+            return
+        icon = QIcon(str(icon_path))
+        self.setWindowIcon(icon)
+        application = QApplication.instance()
+        if application is not None:
+            application.setWindowIcon(icon)
 
     def _build_dashboard_page(self) -> QWidget:
         page = self._page()
