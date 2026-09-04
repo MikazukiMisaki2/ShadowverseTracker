@@ -1062,7 +1062,7 @@ class QtTrackerWindow(FluentWindow):
             label.setToolTip(f"SVWB 职业：{name}")
             label.setStyleSheet(
                 f"QLabel#classBadge {{ background:{color}; border-radius:17px; color:#ffffff; "
-                "font-size:15px; font-weight:800; }}"
+                "font-size:15px; font-weight:800; }"
             )
 
     def _update_cover_preview(self, deck: SavedDeck | None) -> None:
