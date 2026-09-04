@@ -10,6 +10,19 @@
 4. Tracker 会自动寻找游戏和当前对局，不需要填写地址或点击“开始读取”；如果 Steam 与国服同时运行，可在“连接方式”中指定客户端。
 5. 在“当前牌组”中选择或导入自己的牌组，记牌器才能准确维护剩余牌库。
 
+### PySide6 界面迁移
+
+当前迁移在 `ui/pyside6-migration` 分支。该分支将默认界面切换为 PySide6 + QFluentWidgets：左侧导航、卡片式仪表盘、牌组管理、概率计算、详细统计和设置分别独立成页，读取服务与训练记录仍复用现有后端。旧 Tk 界面保留在 `shadowverse_tracker.app`，便于回退和对照。
+
+源码运行前安装依赖：
+
+```powershell
+python -m pip install -e .
+python .\run_tracker.py
+```
+
+当前旧版发行包与迁移版发行包分别保存在 `dist\ShadowverseTracker` 和 `dist\ShadowverseTracker-PySide6`；两者均为 onedir 目录，启动时请保留目录内的 `_internal` 与 `SV_WB_Cards`。
+
 ### 国服直接启动
 
 国服启动器会启动一个 Windows Unity 客户端，并不要求 Tracker 读取模拟器的 Android 内存。Tracker 会自动识别以下国服进程：`MuMu模拟器x影之诗高清版.exe`（部分 Windows API 会显示磁盘文件的 `.o` 后缀），并校验同目录的 `GameAssembly.dll`。
