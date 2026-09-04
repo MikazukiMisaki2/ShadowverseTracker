@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 import math
 import os
 from pathlib import Path
+import re
 import sys
 
 from PySide6.QtCore import Qt, QTimer, Signal, QSize
@@ -189,6 +190,39 @@ QFrame#calculatorCard {
     border: 1px solid #dbe4ee;
     border-radius: 12px;
 }
+QFrame#deckCardTile, QFrame#overlayCardTile {
+    background: #ffffff;
+    border: 1px solid #dbe4ee;
+    border-radius: 10px;
+}
+QFrame#deckCardTile:hover, QFrame#overlayCardTile:hover {
+    border: 1px solid #55aebb;
+    background: #f8fdfe;
+}
+QLabel#cardName {
+    color: #1d3348;
+    font-size: 11px;
+    font-weight: 600;
+}
+QLabel#cardCount {
+    color: #43637c;
+    font-size: 11px;
+    font-weight: 700;
+}
+QLabel#coverBadge {
+    background: #dff2f4;
+    color: #087887;
+    border-radius: 6px;
+    padding: 2px 5px;
+    font-size: 10px;
+    font-weight: 700;
+}
+QLabel#classBadge {
+    border-radius: 17px;
+    color: #ffffff;
+    font-size: 15px;
+    font-weight: 800;
+}
 QLineEdit, QComboBox, QSpinBox {
     min-height: 30px;
     border: 1px solid #cbd9e5;
@@ -314,6 +348,7 @@ class OverlayWindow(QWidget):
         deck = self.parent_window._active_deck()
         if deck is None:
             self.stats.setText("未选择牌组")
+            self.title.setText("悬浮记牌器")
             return
         stats = self.parent_window._history.stats(deck.key)
         self.stats.setText(
@@ -322,28 +357,56 @@ class OverlayWindow(QWidget):
             f"后手 {float(stats['second']['win_rate']):.1f}%"
         )
         ledger = snapshot.get("deck_ledger") if isinstance(snapshot, dict) else None
-        rows = ledger.get("rows", ()) if isinstance(ledger, dict) else [
-            {"card_id": card.card_id, "remaining": card.count, "initial": card.count}
-            for card in deck.cards
-        ]
+        if not isinstance(ledger, dict):
+            ledger = {
+                "deck_name": deck.name,
+                "authoritative_deck_count": deck.total_cards,
+                "rows": [
+                    {"card_id": card.card_id, "remaining": card.count, "initial": card.count}
+                    for card in deck.cards
+                ],
+            }
+        rows = ledger.get("rows", ())
         rows = [row for row in rows if isinstance(row, dict)]
         rows.sort(key=lambda row: (int(row.get("remaining", 0)) <= 0, self.parent_window._card_sort_key(row)))
-        count = ledger.get("authoritative_deck_count", "?") if isinstance(ledger, dict) else deck.total_cards
+        count = ledger.get("authoritative_deck_count", deck.total_cards)
         total = sum(int(row.get("initial", 0)) for row in rows)
         self.title.setText(f"{deck.name}  ·  {count}/{total}")
+        for column in range(2):
+            self.grid.setColumnStretch(column, 1)
         for index, row in enumerate(rows):
             card_id = row.get("card_id")
             name = self.parent_window._card_name(card_id)
             remaining = row.get("remaining", "?")
             initial = row.get("initial", "?")
-            label = QLabel(f"{name}\n{remaining}/{initial}")
-            label.setWordWrap(True)
-            label.setMinimumHeight(42)
-            label.setStyleSheet(
-                "background:#ffffff;border:1px solid %s;border-radius:8px;padding:7px;color:#1d3348;"
-                % ("#e49ba3" if isinstance(remaining, int) and remaining <= 0 else "#dbe4ee")
-            )
-            self.grid.addWidget(label, index // 2, index % 2)
+            tile = QFrame()
+            tile.setObjectName("overlayCardTile")
+            tile.setMinimumWidth(140)
+            tile_layout = QVBoxLayout(tile)
+            tile_layout.setContentsMargins(7, 7, 7, 7)
+            tile_layout.setSpacing(4)
+            image = QLabel()
+            image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            image.setFixedHeight(150)
+            pixmap = self.parent_window._card_image_pixmap(card_id, 146)
+            if pixmap is not None and not pixmap.isNull():
+                image.setPixmap(pixmap)
+            else:
+                image.setText(name)
+                image.setWordWrap(True)
+                image.setStyleSheet("background:#eaf0f5;border-radius:6px;color:#1d3348;padding:6px;")
+            tile_layout.addWidget(image)
+            name_label = QLabel(name)
+            name_label.setObjectName("cardName")
+            name_label.setWordWrap(True)
+            tile_layout.addWidget(name_label)
+            count_label = QLabel(f"剩余 {remaining}/{initial}")
+            count_label.setObjectName("cardCount")
+            if isinstance(remaining, int) and remaining <= 0:
+                count_label.setStyleSheet("color:#b33c4b;")
+                tile.setStyleSheet("QFrame#overlayCardTile { border:1px solid #e49ba3; background:#fff7f7; }")
+            tile_layout.addWidget(count_label)
+            self.grid.addWidget(tile, index // 2, index % 2)
 
 
 class DeckEditorDialog(QDialog):
@@ -450,6 +513,9 @@ class QtTrackerWindow(FluentWindow):
         self._status_text = "未连接 · 自动识别客户端"
         self._overlay: OverlayWindow | None = None
         self._deck_choice_keys: list[str | None] = []
+        self._card_image_roots = self._find_card_image_roots()
+        self._card_image_paths: dict[int, Path | None] = {}
+        self._card_image_cache: dict[tuple[int, int], QPixmap] = {}
         self._repository = DeckRepository()
         self._repository_error = ""
         try:
@@ -487,9 +553,9 @@ class QtTrackerWindow(FluentWindow):
         self.stats_page = stats
         self.settings_page = settings
         self.addSubInterface(dashboard, FluentIcon.HOME, "对局仪表盘")
-        self.addSubInterface(decks, FluentIcon.LIBRARY, "牌组管理")
-        self.addSubInterface(probability, FluentIcon.SYNC, "概率计算")
-        self.addSubInterface(stats, FluentIcon.HISTORY, "对局统计")
+        self.addSubInterface(stats, FluentIcon.HISTORY, "详细统计")
+        self.addSubInterface(decks, FluentIcon.LIBRARY, "我的卡组")
+        self.addSubInterface(probability, FluentIcon.SYNC, "计算器")
         self.addSubInterface(settings, FluentIcon.SETTING, "设置", NavigationItemPosition.BOTTOM)
 
     @staticmethod
@@ -540,7 +606,22 @@ class QtTrackerWindow(FluentWindow):
         subtitle.setObjectName("muted")
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
-        top.addLayout(title_box, 1)
+        self.dashboard_class_badge = QLabel("—")
+        self.dashboard_class_badge.setObjectName("classBadge")
+        self.dashboard_class_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.dashboard_class_badge.setFixedSize(34, 34)
+        self.dashboard_cover_label = QLabel()
+        self.dashboard_cover_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.dashboard_cover_label.setFixedSize(34, 44)
+        self.dashboard_cover_label.setStyleSheet(
+            "background:#eaf0f5;border:1px solid #dbe4ee;border-radius:6px;"
+        )
+        identity = QHBoxLayout()
+        identity.setSpacing(7)
+        identity.addWidget(self.dashboard_class_badge)
+        identity.addWidget(self.dashboard_cover_label)
+        identity.addLayout(title_box)
+        top.addLayout(identity, 1)
         self.status_pill = QLabel(self._status_text)
         self.status_pill.setObjectName("statusPill")
         top.addWidget(self.status_pill, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -552,6 +633,11 @@ class QtTrackerWindow(FluentWindow):
         self.deck_choice.currentIndexChanged.connect(self._select_deck_index)
         controls.addWidget(QLabel("当前牌组"))
         controls.addWidget(self.deck_choice, 1)
+        self.dashboard_choice_badge = QLabel("—")
+        self.dashboard_choice_badge.setObjectName("classBadge")
+        self.dashboard_choice_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.dashboard_choice_badge.setFixedSize(26, 26)
+        controls.addWidget(self.dashboard_choice_badge)
         self.connection_mode = ComboBox()
         self.connection_mode.addItems(("自动", "Steam", "国服"))
         self.connection_mode.setCurrentIndex(0)
@@ -562,10 +648,6 @@ class QtTrackerWindow(FluentWindow):
         self.overlay_button.setIcon(FluentIcon.VIEW.icon())
         self.overlay_button.clicked.connect(self._toggle_overlay)
         controls.addWidget(self.overlay_button)
-        self.stats_button = PushButton("详细统计")
-        self.stats_button.setIcon(FluentIcon.HISTORY.icon())
-        self.stats_button.clicked.connect(lambda: self._switch_page(self.stats_page))
-        controls.addWidget(self.stats_button)
         header_layout.addLayout(controls)
         layout.addWidget(header)
 
@@ -613,7 +695,7 @@ class QtTrackerWindow(FluentWindow):
         page = self._page()
         layout = self._page_layout(page)
         title_row = QHBoxLayout()
-        title_row.addWidget(SubtitleLabel("牌组管理"))
+        title_row.addWidget(SubtitleLabel("我的卡组"))
         title_row.addStretch(1)
         self.deck_delete_button = PushButton("删除")
         self.deck_delete_button.setIcon(FluentIcon.DELETE.icon())
@@ -642,8 +724,30 @@ class QtTrackerWindow(FluentWindow):
         self.deck_list.setMinimumWidth(290)
         self.deck_list.currentRowChanged.connect(self._select_deck_list_row)
         splitter.addWidget(self.deck_list)
-        detail = QtCardPanel("牌组卡牌")
-        self.deck_detail = detail.body
+        detail = QFrame()
+        detail.setObjectName("panelCard")
+        detail_layout = QVBoxLayout(detail)
+        detail_layout.setContentsMargins(12, 10, 12, 12)
+        detail_layout.setSpacing(7)
+        detail_top = QHBoxLayout()
+        self.deck_detail_title = QLabel("牌组卡牌")
+        self.deck_detail_title.setObjectName("sectionTitle")
+        detail_top.addWidget(self.deck_detail_title)
+        detail_top.addStretch(1)
+        self.deck_detail_hint = QLabel("点击卡牌下方按钮设置封面")
+        self.deck_detail_hint.setObjectName("muted")
+        detail_top.addWidget(self.deck_detail_hint)
+        detail_layout.addLayout(detail_top)
+        self.deck_detail_scroll = QScrollArea()
+        self.deck_detail_scroll.setWidgetResizable(True)
+        self.deck_detail_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.deck_detail_content = QWidget()
+        self.deck_card_grid = QGridLayout(self.deck_detail_content)
+        self.deck_card_grid.setContentsMargins(2, 2, 2, 2)
+        self.deck_card_grid.setSpacing(9)
+        self.deck_card_grid.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.deck_detail_scroll.setWidget(self.deck_detail_content)
+        detail_layout.addWidget(self.deck_detail_scroll, 1)
         splitter.addWidget(detail)
         splitter.setSizes((340, 660))
         layout.addWidget(splitter, 1)
@@ -758,6 +862,20 @@ class QtTrackerWindow(FluentWindow):
         self.stats_reset_button.clicked.connect(self._reset_stats)
         title_row.addWidget(self.stats_reset_button)
         layout.addLayout(title_row)
+        stats_metrics = QHBoxLayout()
+        stats_metrics.setSpacing(10)
+        self.stats_rate_metric = MetricCard("卡组胜率", "—", "未选择牌组")
+        self.stats_games_metric = MetricCard("总对局", "—", "胜 / 负")
+        self.stats_first_metric = MetricCard("先手胜率", "—", "0 局")
+        self.stats_second_metric = MetricCard("后手胜率", "—", "0 局")
+        for metric in (
+            self.stats_rate_metric,
+            self.stats_games_metric,
+            self.stats_first_metric,
+            self.stats_second_metric,
+        ):
+            stats_metrics.addWidget(metric, 1)
+        layout.addLayout(stats_metrics)
         self.stats_summary = QLabel("未选择牌组")
         self.stats_summary.setObjectName("sectionTitle")
         layout.addWidget(self.stats_summary)
@@ -795,6 +913,171 @@ class QtTrackerWindow(FluentWindow):
 
     def _switch_page(self, page: QWidget) -> None:
         self.switchTo(page)
+
+    # ----- card art and deck identity ----------------------------------------
+
+    @staticmethod
+    def _find_card_image_roots() -> list[Path]:
+        """Find the optional card-art pack in source and frozen runs."""
+        package_root = Path(__file__).resolve().parents[2]
+        runtime_root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+        roots = (
+            runtime_root / "SV_WB_Cards",
+            runtime_root / "SV_WB_Cards" / "SV_WB_Cards",
+            package_root / "SV_WB_Cards",
+            package_root / "SV_WB_Cards" / "SV_WB_Cards",
+            Path.cwd() / "SV_WB_Cards",
+            Path.cwd() / "SV_WB_Cards" / "SV_WB_Cards",
+        )
+        return list(dict.fromkeys(root for root in roots if root.is_dir()))
+
+    def _card_image_path(self, card_id: object) -> Path | None:
+        if not isinstance(card_id, int) or card_id <= 0:
+            return None
+        if card_id in self._card_image_paths:
+            return self._card_image_paths[card_id]
+        token = str(card_id)
+        found: list[Path] = []
+        pattern = re.compile(rf"(?:^|_){re.escape(token)}(?:_|@|$)")
+        for root in self._card_image_roots:
+            for suffix in ("*.webp", "*.png"):
+                found.extend(
+                    item for item in root.rglob(suffix) if pattern.search(item.stem)
+                )
+            if found:
+                break
+        path = next(
+            (item for item in found if "_evo" not in item.stem and "@" not in item.stem),
+            found[0] if found else None,
+        )
+        self._card_image_paths[card_id] = path
+        return path
+
+    def _card_image_pixmap(self, card_id: object, height: int = 160) -> QPixmap | None:
+        if not isinstance(card_id, int) or card_id <= 0:
+            return None
+        cache_key = (card_id, int(height))
+        if cache_key in self._card_image_cache:
+            return self._card_image_cache[cache_key]
+        path = self._card_image_path(card_id)
+        if path is None:
+            return None
+        pixmap = QPixmap(str(path))
+        if pixmap.isNull():
+            return None
+        scaled = pixmap.scaledToHeight(
+            max(1, int(height)), Qt.TransformationMode.SmoothTransformation
+        )
+        self._card_image_cache[cache_key] = scaled
+        return scaled
+
+    def _make_card_tile(
+        self,
+        card_id: int,
+        count: int,
+        *,
+        cover: bool = False,
+        allow_cover: bool = False,
+    ) -> QFrame:
+        """Create a full-art card tile for the deck page."""
+        tile = QFrame()
+        tile.setObjectName("deckCardTile")
+        tile.setMinimumWidth(145)
+        layout = QVBoxLayout(tile)
+        layout.setContentsMargins(7, 7, 7, 7)
+        layout.setSpacing(5)
+        image = QLabel()
+        image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        image.setFixedHeight(164)
+        pixmap = self._card_image_pixmap(card_id, 158)
+        if pixmap is not None and not pixmap.isNull():
+            image.setPixmap(pixmap)
+        else:
+            image.setText(self._card_name(card_id))
+            image.setWordWrap(True)
+            image.setStyleSheet("background:#eaf0f5;border-radius:6px;color:#1d3348;padding:6px;")
+        layout.addWidget(image)
+        name = QLabel(self._card_name(card_id))
+        name.setObjectName("cardName")
+        name.setWordWrap(True)
+        layout.addWidget(name)
+        metadata = get_card_metadata(card_id)
+        cost = metadata.cost if metadata else "?"
+        count_row = QHBoxLayout()
+        count_label = QLabel(f"{cost}费 · ×{count}")
+        count_label.setObjectName("cardCount")
+        count_row.addWidget(count_label)
+        if cover:
+            cover_label = QLabel("封面")
+            cover_label.setObjectName("coverBadge")
+            count_row.addWidget(cover_label, 0, Qt.AlignmentFlag.AlignRight)
+        count_row.addStretch(1)
+        layout.addLayout(count_row)
+        if allow_cover:
+            cover_button = PushButton("已是封面" if cover else "设为封面")
+            cover_button.setEnabled(not cover)
+            cover_button.clicked.connect(
+                lambda _checked=False, value=card_id: self._set_cover_card(value)
+            )
+            layout.addWidget(cover_button)
+        return tile
+
+    def _set_cover_card(self, card_id: int) -> None:
+        deck = self._active_deck()
+        if deck is None:
+            return
+        try:
+            self._repository.set_cover(deck.key, card_id)
+        except (OSError, KeyError, ValueError) as exc:
+            self._show_error("设置封面失败", str(exc))
+            return
+        self._refresh_deck_choices()
+        self._show_info("封面已更新", self._card_name(card_id))
+
+    @staticmethod
+    def _class_badge(class_id: int | None) -> tuple[str, str, str]:
+        badges = {0: "中", 1: "精", 2: "皇", 3: "巫", 4: "龙", 5: "梦", 6: "主", 7: "超"}
+        colors = {
+            0: ("#64748b", "中立"),
+            1: ("#238b57", "精灵"),
+            2: ("#c88727", "皇家护卫"),
+            3: ("#7d58b5", "巫师"),
+            4: ("#c84b46", "龙族"),
+            5: ("#a24a82", "梦魇"),
+            6: ("#3e7fc2", "主教"),
+            7: ("#178b98", "超越者"),
+        }
+        key = int(class_id) if class_id is not None else -1
+        color, name = colors.get(key, ("#718096", "未知职业"))
+        return badges.get(key, "?"), color, name
+
+    def _update_class_badge(self, class_id: int | None) -> None:
+        if not hasattr(self, "dashboard_class_badge"):
+            return
+        badge, color, name = self._class_badge(class_id)
+        for label in (self.dashboard_class_badge, getattr(self, "dashboard_choice_badge", None)):
+            if label is None:
+                continue
+            label.setText(badge)
+            label.setToolTip(f"SVWB 职业：{name}")
+            label.setStyleSheet(
+                f"QLabel#classBadge {{ background:{color}; border-radius:17px; color:#ffffff; "
+                "font-size:15px; font-weight:800; }}"
+            )
+
+    def _update_cover_preview(self, deck: SavedDeck | None) -> None:
+        if not hasattr(self, "dashboard_cover_label"):
+            return
+        if deck is None or deck.cover_card_id is None:
+            self.dashboard_cover_label.clear()
+            self.dashboard_cover_label.setText("封面")
+            return
+        pixmap = self._card_image_pixmap(deck.cover_card_id, 40)
+        if pixmap is None or pixmap.isNull():
+            self.dashboard_cover_label.setText("封面")
+            return
+        self.dashboard_cover_label.setText("")
+        self.dashboard_cover_label.setPixmap(pixmap)
 
     # ----- deck repository ------------------------------------------------------
 
@@ -855,22 +1138,43 @@ class QtTrackerWindow(FluentWindow):
 
     def _render_deck_detail(self) -> None:
         deck = self._active_deck()
-        if not hasattr(self, "deck_detail"):
+        if not hasattr(self, "deck_card_grid"):
             return
+        while self.deck_card_grid.count():
+            item = self.deck_card_grid.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
         if deck is None:
-            self.deck_detail.setPlainText("未选择牌组\n\n选择空项可进行特殊/解密对局。")
+            self.deck_detail_title.setText("牌组卡牌")
+            self.deck_detail_hint.setText("未选择牌组；选择左侧空项可进行特殊/解密对局")
+            empty = QLabel("未选择牌组")
+            empty.setObjectName("muted")
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.deck_card_grid.addWidget(empty, 0, 0, 1, 4)
             return
-        lines = [
-            deck.name,
-            f"职业：{class_name(deck.class_id)}    模式：{self._format_mode(deck.format_version)}",
-            f"牌组总数：{deck.total_cards}/40",
-            "",
-        ]
-        for card in sorted(deck.cards, key=lambda item: (get_card_metadata(item.card_id).cost if get_card_metadata(item.card_id) else 99, self._card_name(item.card_id))):
-            metadata = get_card_metadata(card.card_id)
-            cost = metadata.cost if metadata else "?"
-            lines.append(f"{cost}费  {self._card_name(card.card_id)}  ×{card.count}")
-        self.deck_detail.setPlainText("\n".join(lines))
+        self.deck_detail_title.setText(
+            f"{deck.name} · {class_name(deck.class_id)} · {self._format_mode(deck.format_version)} · {deck.total_cards}/40"
+        )
+        self.deck_detail_hint.setText(
+            f"封面：{self._card_name(deck.cover_card_id) if deck.cover_card_id else '未设置'} · 点击卡牌下方按钮更换"
+        )
+        cards = sorted(
+            deck.cards,
+            key=lambda item: (
+                get_card_metadata(item.card_id).cost if get_card_metadata(item.card_id) else 99,
+                self._card_name(item.card_id),
+            ),
+        )
+        for index, card in enumerate(cards):
+            tile = self._make_card_tile(
+                card.card_id,
+                card.count,
+                cover=card.card_id == deck.cover_card_id,
+                allow_cover=True,
+            )
+            self.deck_card_grid.addWidget(tile, index // 4, index % 4)
+        for column in range(4):
+            self.deck_card_grid.setColumnStretch(column, 1)
 
     def _import_deck(self) -> None:
         raw = self.deck_url.text().strip()
@@ -1153,10 +1457,14 @@ class QtTrackerWindow(FluentWindow):
         if active is None:
             self.metric_rate.set_value("—", "未选择牌组")
             self.dashboard_deck_label.setText("未选择本地牌组")
+            self._update_class_badge(None)
+            self._update_cover_preview(None)
             return
         stats = self._history.stats(active.key)
         self.metric_rate.set_value(f"{float(stats['win_rate']):.1f}%", f"{int(stats['finished'])} 局")
         self.dashboard_deck_label.setText(f"{active.name} · {class_name(active.class_id)} / {self._format_mode(active.format_version)}")
+        self._update_class_badge(active.class_id)
+        self._update_cover_preview(active)
 
     # ----- probability and stats ------------------------------------------------
 
@@ -1223,12 +1531,30 @@ class QtTrackerWindow(FluentWindow):
         self.stats_deck_label.setText(active.name if active else "未选择牌组")
         self.match_table.setRowCount(0)
         if active is None:
+            self.stats_rate_metric.set_value("—", "未选择牌组")
+            self.stats_games_metric.set_value("—", "胜 / 负")
+            self.stats_first_metric.set_value("—", "0 局")
+            self.stats_second_metric.set_value("—", "0 局")
             self.stats_summary.setText("未选择牌组")
             return
         stats = self._history.stats(active.key)
+        first = stats["first"]
+        second = stats["second"]
+        self.stats_rate_metric.set_value(
+            f"{float(stats['win_rate']):.1f}%", f"{int(stats['finished'])} 局"
+        )
+        self.stats_games_metric.set_value(
+            f"{int(stats['finished'])}", f"{int(stats['wins'])} 胜 / {int(stats['losses'])} 负"
+        )
+        self.stats_first_metric.set_value(
+            f"{float(first['win_rate']):.1f}%", f"{int(first['finished'])} 局"
+        )
+        self.stats_second_metric.set_value(
+            f"{float(second['win_rate']):.1f}%", f"{int(second['finished'])} 局"
+        )
         self.stats_summary.setText(
             f"总计 {stats['finished']} 局 · {stats['wins']} 胜 / {stats['losses']} 负 · 胜率 {float(stats['win_rate']):.1f}%   "
-            f"先手 {float(stats['first']['win_rate']):.1f}%   后手 {float(stats['second']['win_rate']):.1f}%"
+            f"先手 {float(first['win_rate']):.1f}%   后手 {float(second['win_rate']):.1f}%"
         )
         records = self._history.for_deck(active.key)
         for record in reversed(records):

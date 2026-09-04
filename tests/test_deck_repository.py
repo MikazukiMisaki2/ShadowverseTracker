@@ -40,6 +40,18 @@ class DeckRepositoryTests(unittest.TestCase):
             self.assertEqual(updated.total_cards, 40)
             self.assertEqual(DeckRepository(path).load().active(), updated)
 
+    def test_cover_card_persists_and_rejects_cards_outside_deck(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "decks.json"
+            repository = DeckRepository(path)
+            first = repository.add_official("测试牌组", parse_official_deck(test_hash()))
+            cover_id = first.cards[0].card_id
+            updated = repository.set_cover(first.key, cover_id)
+            self.assertEqual(updated.cover_card_id, cover_id)
+            self.assertEqual(DeckRepository(path).load().active().cover_card_id, cover_id)  # type: ignore[union-attr]
+            with self.assertRaises(ValueError):
+                repository.set_cover(first.key, 99999999)
+
 
 if __name__ == "__main__":
     unittest.main()

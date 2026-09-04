@@ -6,6 +6,7 @@ __pycache__/
 .ruff_cache/
 .venv/
 venv/
+*.egg-info/
 
 # IDE and OS
 .idea/

@@ -32,6 +32,7 @@ class SavedDeck:
     cards: tuple[DeckCard, ...]
     source: str = ""
     created_at: str = ""
+    cover_card_id: int | None = None
 
     @property
     def total_cards(self) -> int:
@@ -56,6 +57,7 @@ class SavedDeck:
             "cards": [card.__dict__ for card in self.cards],
             "source": self.source,
             "created_at": self.created_at,
+            "cover_card_id": self.cover_card_id,
         }
 
     @classmethod
@@ -76,9 +78,27 @@ class SavedDeck:
             cards=cards,
             source=str(value.get("source", "")),
             created_at=str(value.get("created_at", "")),
+            cover_card_id=(
+                int(value["cover_card_id"])
+                if value.get("cover_card_id") is not None
+                else None
+            ),
         )
         if not result.key or not result.name or result.total_cards != EXPECTED_DECK_SIZE:
             raise ValueError("invalid saved 40-card deck")
+        if result.cover_card_id is not None and not any(
+            card.card_id == result.cover_card_id for card in result.cards
+        ):
+            result = cls(
+                key=result.key,
+                name=result.name,
+                class_id=result.class_id,
+                format_version=result.format_version,
+                cards=result.cards,
+                source=result.source,
+                created_at=result.created_at,
+                cover_card_id=None,
+            )
         return result
 
 
@@ -172,6 +192,33 @@ class DeckRepository:
             cards=tuple(cards),
             source=deck.source,
             created_at=deck.created_at,
+            cover_card_id=(
+                deck.cover_card_id
+                if any(card.card_id == deck.cover_card_id for card in cards)
+                else None
+            ),
+        )
+        self.decks = [updated if item.key == key else item for item in self.decks]
+        self.active_key = key
+        self.save()
+        return updated
+
+    def set_cover(self, key: str, card_id: int | None) -> SavedDeck:
+        """Set the card used as the visual cover for a saved deck."""
+        deck = next((item for item in self.decks if item.key == key), None)
+        if deck is None:
+            raise KeyError(key)
+        if card_id is not None and not any(card.card_id == card_id for card in deck.cards):
+            raise ValueError("封面卡牌必须属于当前牌组")
+        updated = SavedDeck(
+            key=deck.key,
+            name=deck.name,
+            class_id=deck.class_id,
+            format_version=deck.format_version,
+            cards=deck.cards,
+            source=deck.source,
+            created_at=deck.created_at,
+            cover_card_id=card_id,
         )
         self.decks = [updated if item.key == key else item for item in self.decks]
         self.active_key = key
