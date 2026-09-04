@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 from dataclasses import dataclass
 from functools import lru_cache
+import json
 from pathlib import Path
 import sys
 
@@ -55,9 +56,65 @@ def _catalog_sources() -> tuple[Path, ...]:
     )
 
 
+@lru_cache(maxsize=1)
+def load_cn_card_id_map() -> dict[int, int]:
+    """Load the China-client runtime IDs used by the Windows Unity build.
+
+    The China client keeps a second ID namespace (currently ``862…``) for a
+    number of cards.  The battle objects expose those IDs correctly, but the
+    shared WB catalog is keyed by the printed/global IDs.  Keep this mapping
+    in a small packaged JSON file so both source runs and PyInstaller builds
+    resolve the same card names and effects without depending on a sibling
+    project or a network request.
+    """
+    source = next((path for path in _cn_card_id_sources() if path.is_file()), None)
+    if source is None:
+        return {}
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    raw_ids = payload.get("ids", payload) if isinstance(payload, dict) else None
+    if not isinstance(raw_ids, dict):
+        return {}
+    result: dict[int, int] = {}
+    for raw_runtime_id, raw_catalog_id in raw_ids.items():
+        try:
+            runtime_id = int(raw_runtime_id)
+            catalog_id = int(raw_catalog_id)
+        except (TypeError, ValueError):
+            continue
+        if runtime_id > 0 and catalog_id > 0:
+            result[runtime_id] = catalog_id
+    return result
+
+
+def _cn_card_id_sources() -> tuple[Path, ...]:
+    package_root = Path(__file__).resolve().parent
+    runtime_root = Path(getattr(sys, "_MEIPASS", package_root.parent))
+    executable_root = Path(sys.executable).resolve().parent
+    return (
+        runtime_root / "shadowverse_tracker" / "data" / "cn_card_ids.json",
+        executable_root / "_internal" / "shadowverse_tracker" / "data" / "cn_card_ids.json",
+        package_root / "data" / "cn_card_ids.json",
+    )
+
+
 def canonical_card_id(card_id: int) -> int:
-    """Return the printed-card ID for a runtime style/evolution variant."""
-    return int(card_id) // 10 * 10
+    """Return the printed/global ID for a runtime style/evolution variant.
+
+    Steam-style IDs only need the trailing style/evolution digit removed.  CN
+    IDs are first translated through ``cn_card_ids.json`` and then receive the
+    same normalization, so all downstream deck/effect/history code sees one
+    stable ID namespace.
+    """
+    value = int(card_id)
+    base = value // 10 * 10
+    aliases = load_cn_card_id_map()
+    mapped = aliases.get(value) or aliases.get(base)
+    if mapped:
+        return int(mapped) // 10 * 10
+    return base
 
 
 def get_card_metadata(card_id: int) -> CardMetadata | None:

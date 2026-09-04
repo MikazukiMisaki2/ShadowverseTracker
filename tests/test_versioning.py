@@ -14,6 +14,7 @@ from shadowverse_tracker.versioning import (
     UnsupportedGameVersion,
     VersionProfile,
     _auto_compatible_profile,
+    load_profiles,
     verify_process_version,
 )
 
@@ -65,6 +66,18 @@ class FakeReader:
 
 
 class VersioningTests(unittest.TestCase):
+    def test_bundled_china_profile_uses_dynamic_discovery(self) -> None:
+        profiles = load_profiles()
+        value = next(
+            profile
+            for profile in profiles
+            if profile.gameassembly_sha256
+            == "79BD3884CFA1B4989FDFF6273F64E5985D92E8A9FF702685E60936CC804E53E4"
+        )
+        self.assertTrue(value.dynamic_discovery)
+        self.assertEqual(value.process_name, "MuMu模拟器x影之诗高清版.exe")
+        self.assertEqual(value.battle_model_class_pointer_rva, 0)
+
     def test_unknown_hash_can_reuse_profile_after_core_class_validation(self) -> None:
         value = _auto_compatible_profile(FakeReader(), FakeReader()._module, (profile(),), "NEW")
         self.assertIsNotNone(value)

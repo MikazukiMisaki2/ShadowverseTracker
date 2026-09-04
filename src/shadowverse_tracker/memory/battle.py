@@ -2093,6 +2093,7 @@ def read_battle_model(
     *,
     reveal_opponent_hand: bool = False,
     battle_view_server_data_address: int | None = None,
+    read_root_legal_actions: bool = False,
 ) -> dict[str, object]:
     if not address:
         raise ValueError("null BattleModel")
@@ -2167,12 +2168,23 @@ def read_battle_model(
         if battle_root
         else None
     )
-    legal_actions = (
-        read_battle_view_server_data(reader, battle_view_server_data_address)
-        if battle_view_server_data_address
-        else None
+    legal_actions: LegalActions | dict[str, object] | None = None
+    if battle_view_server_data_address:
+        legal_actions = read_battle_view_server_data(reader, battle_view_server_data_address)
+    elif read_root_legal_actions and root_address:
+        # The China client does not expose a stable presentation-layer pointer
+        # for BattleViewServerData.  Its BattleRootMpo already carries the same
+        # legality projections, so use those directly instead of forcing a
+        # full-process pointer scan in the polling thread.
+        try:
+            legal_actions = read_battle_root_legal_actions(reader, root_address)
+        except (OSError, ValueError, LookupError):
+            # Root state remains useful when a legality collection is released
+            # during an animation or when an older client lacks the projection.
+            legal_actions = None
+    legal_actions_dict = (
+        asdict(legal_actions) if isinstance(legal_actions, LegalActions) else legal_actions
     )
-    legal_actions_dict = asdict(legal_actions) if legal_actions is not None else None
     if legal_actions is not None and isinstance(public_root, dict):
         players = public_root.get("players")
         ally = players[0] if isinstance(players, (list, tuple)) and players else None

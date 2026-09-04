@@ -4,12 +4,15 @@ from pathlib import Path
 import struct
 import sys
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from shadowverse_tracker.memory.battle import (
+    read_battle_model,
     read_battle_root,
     read_battle_root_legal_actions,
     read_battle_view_server_data,
@@ -103,6 +106,39 @@ class FakeReader:
 
 
 class BattleDecoderTests(unittest.TestCase):
+    def test_model_can_use_root_legal_actions_without_server_data_scan(self) -> None:
+        memory = FakeReader()
+        model, root_property, root = 0x1000, 0x2000, 0x3000
+        memory.write(model + 0x30, "<Q", root_property)
+        memory.write(root_property + 0x20, "<Q", root)
+        public_root = {
+            "is_ally_turn": True,
+            "players": [
+                {"hand": [{"unique_id": 11}], "field": []},
+                {"hand": [], "field": [], "unique_id": 2},
+            ],
+        }
+        legality = {
+            "can_play_cards": (11,),
+            "can_attack_leader_cards": (),
+            "can_attack_field_cards": (),
+            "attack_targets": {},
+        }
+        fake_root = SimpleNamespace(
+            to_public_dict=lambda *, reveal_opponent_hand=False: public_root,
+        )
+        with (
+            patch("shadowverse_tracker.memory.battle.read_battle_root", return_value=fake_root),
+            patch(
+                "shadowverse_tracker.memory.battle.read_battle_root_legal_actions",
+                return_value=legality,
+            ) as read_legality,
+        ):
+            result = read_battle_model(memory, model, read_root_legal_actions=True)
+
+        read_legality.assert_called_once_with(memory, root)
+        self.assertEqual(result["legal_actions"]["can_play_cards"], (11,))
+
     def test_decodes_root_embedded_legal_actions_for_puzzle_mode(self) -> None:
         memory = FakeReader()
         root = 0x1000

@@ -30,6 +30,7 @@ from .card_catalog import (
     load_card_catalog,
 )
 from .deck_repository import DeckRepository, SavedDeck
+from .faith_probability import calculate_faith_damage_probability
 from .memory.deck import DeckCard
 from .official_deck import OfficialDeck, OfficialDeckError, import_deck_code, parse_official_deck
 from .match_history import CLASS_NAMES, MatchHistory, MatchRecord, class_name, result_label, terminal_match_id
@@ -48,6 +49,7 @@ class TrackerApp(tk.Tk):
         self.minsize(1000, 620)
         self._events: queue.Queue[tuple[str, object]] = queue.Queue()
         self._service: TrackerService | None = None
+        self._startup_pid: int | None = getattr(args, "pid", None)
         self._repository = DeckRepository()
         self._repository_error = ""
         try:
@@ -74,6 +76,7 @@ class TrackerApp(tk.Tk):
         self._overlay_drag_origin: tuple[int, int] | None = None
         self._overlay_resize_origin: tuple[int, int, int, int] | None = None
         self._overlay_images: dict[tuple[int, int], object] = {}
+        self._probability_window: tk.Toplevel | None = None
         self._card_image_paths: dict[int, Path | None] = {}
         self._card_image_roots = self._find_card_image_roots()
         self._build_ui(args)
@@ -141,6 +144,9 @@ class TrackerApp(tk.Tk):
             decks, text="打开悬浮记牌器", command=self._toggle_overlay
         )
         self.overlay_button.grid(row=0, column=7, padx=(6, 0))
+        ttk.Button(decks, text="概率计算", command=self._open_probability_window).grid(
+            row=0, column=8, padx=(6, 0)
+        )
 
         active_deck = self._active_saved_deck()
         default_class = class_name(active_deck.class_id) if active_deck else class_name(1)
@@ -193,25 +199,12 @@ class TrackerApp(tk.Tk):
         self.model_hint.grid(row=0, column=2, sticky="w")
         self.connect_button = ttk.Button(connection, text="开始读取", command=self._connect)
         self.connect_button.grid(row=0, column=3, padx=(12, 0))
-        self.status_var = tk.StringVar(value="未连接")
+        self.status_var = tk.StringVar(value="未连接（自动寻找 Steam / 国服客户端）")
         ttk.Label(connection, textvariable=self.status_var).grid(row=1, column=0, columnspan=4, sticky="w", pady=(8, 0))
         self.model_label.grid_remove()
         self.model_entry.grid_remove()
         self.model_hint.grid_remove()
         self.connect_button.grid_remove()
-        ttk.Label(connection, text="抽牌概率").grid(row=2, column=0, sticky="w", pady=(8, 0))
-        self.probability_card_var = tk.StringVar()
-        self.probability_card_choice = ttk.Combobox(
-            connection, textvariable=self.probability_card_var, state="readonly", width=28
-        )
-        self.probability_card_choice.grid(row=2, column=1, padx=6, pady=(8, 0), sticky="w")
-        ttk.Label(connection, text="未来抽牌").grid(row=2, column=2, sticky="e", pady=(8, 0))
-        self.probability_draws_var = tk.StringVar(value="1")
-        ttk.Entry(connection, textvariable=self.probability_draws_var, width=5).grid(row=2, column=3, padx=(6, 0), pady=(8, 0), sticky="w")
-        self.probability_result_var = tk.StringVar(value="选择牌库中的卡牌后计算")
-        ttk.Button(connection, text="计算", command=self._calculate_draw_probability).grid(row=2, column=4, padx=(6, 0), pady=(8, 0))
-        ttk.Label(connection, textvariable=self.probability_result_var).grid(row=3, column=0, columnspan=5, sticky="w", pady=(6, 0))
-        self._probability_cards: dict[str, tuple[int, int, int]] = {}
         self.opponent_counter_var = tk.StringVar(value="通用计数器：等待对局数据")
         self.class_counter_var = tk.StringVar(value="职业计数器：等待对局数据")
         counter_frame = ttk.LabelFrame(connection, text="通用计数器")
@@ -227,14 +220,78 @@ class TrackerApp(tk.Tk):
         connection.columnconfigure(5, weight=1)
         connection.columnconfigure(6, weight=1)
 
-        # Opponent key-card probability.  Deck/hand/swap values are filled
-        # from Tracker snapshots; only mulligan policy and the queried key
+        details = ttk.PanedWindow(root, orient="horizontal")
+        details.pack(fill="both", expand=True, pady=(10, 0))
+        self.hand_text = self._overview_panel(details)
+        self.deck_text = self._text_panel(details, "剩余牌库")
+        self.field_text = self._text_panel(details, "目前对局")
+        self.history_text = self._text_panel(details, "最近记录")
+        self.deck_text.tag_configure("deck_header", font=("Segoe UI", 14, "bold"))
+        self.deck_text.tag_configure("deck_section", font=("Segoe UI", 10, "bold"), foreground="#24527a")
+        self._build_probability_window()
+        self._refresh_deck_choices()
+        self._update_stats_summary()
+
+    def _build_probability_window(self) -> None:
+        """Create the optional calculator window and keep it hidden by default."""
+        if self._probability_window is not None and self._probability_window.winfo_exists():
+            return
+
+        window = tk.Toplevel(self)
+        window.title("Shadowverse Tracker - 概率计算")
+        window.geometry("1000x430")
+        window.minsize(760, 360)
+        window.transient(self)
+        window.protocol("WM_DELETE_WINDOW", window.withdraw)
+        window.columnconfigure(0, weight=1)
+        body = ttk.Frame(window, padding=10, style="App.TFrame")
+        body.grid(row=0, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=1)
+
+        draw_frame = ttk.LabelFrame(body, text="抽牌概率", padding=6)
+        draw_frame.grid(row=0, column=0, sticky="ew")
+        draw_frame.columnconfigure(1, weight=1)
+        ttk.Label(draw_frame, text="目标卡牌").grid(row=0, column=0, sticky="w")
+        self.probability_card_var = tk.StringVar()
+        self.probability_card_choice = ttk.Combobox(
+            draw_frame,
+            textvariable=self.probability_card_var,
+            state="readonly",
+            width=42,
+        )
+        self.probability_card_choice.grid(row=0, column=1, padx=6, sticky="ew")
+        ttk.Label(draw_frame, text="未来抽牌").grid(row=0, column=2, sticky="e")
+        self.probability_draws_var = tk.StringVar(value="1")
+        ttk.Entry(draw_frame, textvariable=self.probability_draws_var, width=6).grid(
+            row=0, column=3, padx=(6, 0), sticky="w"
+        )
+        self.probability_result_var = tk.StringVar(value="选择牌库中的卡牌后计算")
+        ttk.Button(draw_frame, text="计算", command=self._calculate_draw_probability).grid(
+            row=0, column=4, padx=(8, 0), sticky="w"
+        )
+        ttk.Label(draw_frame, textvariable=self.probability_result_var).grid(
+            row=1, column=0, columnspan=5, sticky="w", pady=(6, 0)
+        )
+        self._probability_cards: dict[str, tuple[int, int, int]] = {}
+
+        # Opponent key-card probability. Deck/hand/swap values are filled from
+        # Tracker snapshots; only mulligan policy and the queried key
         # assumptions need to be supplied by the user.
-        key_frame = ttk.LabelFrame(root, text="对手关键牌概率（固定首回合抽1张，起手换4张模型）", padding=6)
-        key_frame.pack(fill="x", pady=(8, 0))
+        key_frame = ttk.LabelFrame(
+            body,
+            text="对手关键牌概率（固定首回合抽1张，起手换4张模型）",
+            padding=6,
+        )
+        key_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         self.key_strategy_var = tk.StringVar(value="unknown")
         ttk.Label(key_frame, text="策略").grid(row=0, column=0, sticky="w")
-        strategy_choice = ttk.Combobox(key_frame, textvariable=self.key_strategy_var, values=("known", "unknown"), state="readonly", width=9)
+        strategy_choice = ttk.Combobox(
+            key_frame,
+            textvariable=self.key_strategy_var,
+            values=("known", "unknown"),
+            state="readonly",
+            width=9,
+        )
         strategy_choice.grid(row=0, column=1, padx=4)
         self.key_keep1_var = tk.StringVar(value="0")
         self.key_keep2_var = tk.StringVar(value="0")
@@ -245,42 +302,107 @@ class TrackerApp(tk.Tk):
         self.key_seen_var = tk.StringVar(value="0")
         self._key_policy_entries: list[ttk.Entry] = []
         for column, label, variable in (
-            (2, "留1类型", self.key_keep1_var), (4, "留2类型", self.key_keep2_var),
-            (6, "已见留1", self.key_seen1_var), (8, "已见留2", self.key_seen2_var),
+            (2, "留1类型", self.key_keep1_var),
+            (4, "留2类型", self.key_keep2_var),
+            (6, "已见留1", self.key_seen1_var),
+            (8, "已见留2", self.key_seen2_var),
         ):
-            ttk.Label(key_frame, text=label).grid(row=0, column=column, padx=(8, 2), sticky="e")
+            ttk.Label(key_frame, text=label).grid(
+                row=0, column=column, padx=(8, 2), sticky="e"
+            )
             entry = ttk.Entry(key_frame, textvariable=variable, width=5)
             entry.grid(row=0, column=column + 1, padx=2)
             self._key_policy_entries.append(entry)
         self.key_deck_remaining_var = tk.StringVar(value="—")
         self.key_hand_size_var = tk.StringVar(value="—")
         self.key_mulligan_var = tk.StringVar(value="—")
-        for column, label, variable in ((10, "牌库剩余", self.key_deck_remaining_var), (12, "未知手牌", self.key_hand_size_var), (14, "对手换牌数", self.key_mulligan_var)):
-            ttk.Label(key_frame, text=label).grid(row=0, column=column, padx=(8, 2), sticky="e")
-            ttk.Label(key_frame, textvariable=variable, width=5, relief="sunken", anchor="center").grid(row=0, column=column + 1, padx=2)
-        for column, label, variable in ((0, "Key投入", self.key_copies_var), (3, "Key留牌上限", self.key_limit_var), (6, "Key已见", self.key_seen_var)):
-            ttk.Label(key_frame, text=label).grid(row=1, column=column, padx=(8, 2), pady=(5, 0), sticky="e")
+        for column, label, variable in (
+            (10, "牌库剩余", self.key_deck_remaining_var),
+            (12, "未知手牌", self.key_hand_size_var),
+            (14, "对手换牌数", self.key_mulligan_var),
+        ):
+            ttk.Label(key_frame, text=label).grid(
+                row=0, column=column, padx=(8, 2), sticky="e"
+            )
+            ttk.Label(
+                key_frame,
+                textvariable=variable,
+                width=5,
+                relief="sunken",
+                anchor="center",
+            ).grid(row=0, column=column + 1, padx=2)
+        for column, label, variable in (
+            (0, "Key投入", self.key_copies_var),
+            (3, "Key留牌上限", self.key_limit_var),
+            (6, "Key已见", self.key_seen_var),
+        ):
+            ttk.Label(key_frame, text=label).grid(
+                row=1, column=column, padx=(8, 2), pady=(5, 0), sticky="e"
+            )
             entry = ttk.Entry(key_frame, textvariable=variable, width=5)
             entry.grid(row=1, column=column + 1, padx=2, pady=(5, 0))
             if variable is self.key_limit_var:
                 self._key_policy_entries.append(entry)
         self.key_probability_result_var = tk.StringVar(value="等待对手对局数据")
-        ttk.Button(key_frame, text="计算对手Key概率", command=self._calculate_opponent_key_probability).grid(row=1, column=8, columnspan=3, padx=6, pady=(5, 0), sticky="w")
-        ttk.Button(key_frame, text="计算对手下回合Key概率", command=self._calculate_opponent_next_turn_key_probability).grid(row=1, column=11, columnspan=4, padx=6, pady=(5, 0), sticky="w")
-        ttk.Label(key_frame, textvariable=self.key_probability_result_var).grid(row=2, column=0, columnspan=17, sticky="w", pady=(5, 0))
+        ttk.Button(
+            key_frame,
+            text="计算对手Key概率",
+            command=self._calculate_opponent_key_probability,
+        ).grid(row=1, column=8, columnspan=3, padx=6, pady=(5, 0), sticky="w")
+        ttk.Button(
+            key_frame,
+            text="计算对手下回合Key概率",
+            command=self._calculate_opponent_next_turn_key_probability,
+        ).grid(row=1, column=11, columnspan=4, padx=6, pady=(5, 0), sticky="w")
+        ttk.Label(key_frame, textvariable=self.key_probability_result_var).grid(
+            row=2, column=0, columnspan=17, sticky="w", pady=(5, 0)
+        )
         strategy_choice.bind("<<ComboboxSelected>>", self._sync_key_strategy_inputs)
-        self._sync_key_strategy_inputs()
 
-        details = ttk.PanedWindow(root, orient="horizontal")
-        details.pack(fill="both", expand=True, pady=(10, 0))
-        self.hand_text = self._overview_panel(details)
-        self.deck_text = self._text_panel(details, "剩余牌库")
-        self.field_text = self._text_panel(details, "目前对局")
-        self.history_text = self._text_panel(details, "最近记录")
-        self.deck_text.tag_configure("deck_header", font=("Segoe UI", 14, "bold"))
-        self.deck_text.tag_configure("deck_section", font=("Segoe UI", 10, "bold"), foreground="#24527a")
-        self._refresh_deck_choices()
-        self._update_stats_summary()
+        faith_frame = ttk.LabelFrame(
+            body,
+            text="天晶深渊伤害概率（X/Y/Z 独立逐点分配）",
+            padding=6,
+        )
+        faith_frame.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        ttk.Label(faith_frame, text="信仰总值 X+Y+Z").grid(
+            row=0, column=0, sticky="w"
+        )
+        self.faith_total_var = tk.StringVar(value="")
+        ttk.Entry(faith_frame, textvariable=self.faith_total_var, width=7).grid(
+            row=0, column=1, padx=(6, 16)
+        )
+        ttk.Label(faith_frame, text="需要 Z ≥").grid(row=0, column=2, sticky="e")
+        self.faith_min_z_var = tk.StringVar(value="")
+        ttk.Entry(faith_frame, textvariable=self.faith_min_z_var, width=7).grid(
+            row=0, column=3, padx=6
+        )
+        self.faith_probability_result_var = tk.StringVar(
+            value="每个信仰点以 1/3 概率分配给 X、Y、Z"
+        )
+        ttk.Button(
+            faith_frame,
+            text="计算天晶深渊概率",
+            command=self._calculate_faith_damage_probability,
+        ).grid(row=0, column=4, padx=(6, 12), sticky="w")
+        ttk.Label(
+            faith_frame,
+            textvariable=self.faith_probability_result_var,
+        ).grid(row=1, column=0, columnspan=5, sticky="w", pady=(5, 0))
+
+        self._probability_window = window
+        self._sync_key_strategy_inputs()
+        window.withdraw()
+
+    def _open_probability_window(self) -> None:
+        """Show the calculator window from the main toolbar."""
+        self._build_probability_window()
+        window = self._probability_window
+        if window is None:
+            return
+        window.deiconify()
+        window.lift()
+        window.focus_force()
 
     @staticmethod
     def _app_asset_path(name: str) -> Path | None:
@@ -622,6 +744,7 @@ class TrackerApp(tk.Tk):
         self._service = TrackerService(
             TrackerConfig(
                 model_address=model,
+                pid=self._startup_pid,
                 # Opening mulligan responses can be replaced in quick
                 # succession. Poll at 20 Hz so the opponent response is seen
                 # before the local response overwrites it.
@@ -709,6 +832,22 @@ class TrackerApp(tk.Tk):
     def _calculate_opponent_next_turn_key_probability(self) -> None:
         """Project the opponent's hidden hand through their next turn-start draw."""
         self._calculate_opponent_key_probability_for_state(after_next_draw=True)
+
+    def _calculate_faith_damage_probability(self) -> None:
+        try:
+            faith_total = int(self.faith_total_var.get().strip())
+            minimum_damage = int(self.faith_min_z_var.get().strip())
+        except (AttributeError, ValueError):
+            self.faith_probability_result_var.set("信仰总值和 Z 下限请输入整数")
+            return
+        try:
+            probability = calculate_faith_damage_probability(faith_total, minimum_damage)
+        except ValueError as exc:
+            self.faith_probability_result_var.set(f"无法计算：{exc}")
+            return
+        self.faith_probability_result_var.set(
+            f"P(Z≥{minimum_damage})：{probability * 100:.2f}%（N={faith_total}，Z~Binomial(N, 1/3)）"
+        )
 
     @staticmethod
     def _project_opponent_next_draw(deck_remaining: int, hand_size: int) -> tuple[int, int] | None:
@@ -1500,11 +1639,11 @@ class TrackerApp(tk.Tk):
             for card_id, card_count in sorted(
                 counts.items(),
                 key=lambda item: (
-                    catalog.get(item[0]).cost if catalog.get(item[0]) else 999,
-                    catalog.get(item[0]).name if catalog.get(item[0]) else "未知卡牌",
+                    get_card_metadata(item[0]).cost if get_card_metadata(item[0]) else 999,
+                    get_card_name(item[0]),
                 ),
             ):
-                metadata = catalog.get(card_id)
+                metadata = get_card_metadata(card_id)
                 name = metadata.name if metadata else get_card_name(card_id)
                 cost = metadata.cost if metadata else "?"
                 table.insert("", "end", iid=str(card_id), values=(f"{cost}费", name, card_count))
@@ -2124,6 +2263,12 @@ class TrackerApp(tk.Tk):
         return f"{cost}费 {name}  {row.get('remaining')}/{row.get('initial')}"
 
     def _close(self) -> None:
+        if self._probability_window is not None:
+            try:
+                self._probability_window.destroy()
+            except tk.TclError:
+                pass
+            self._probability_window = None
         if self._overlay is not None:
             try:
                 self._overlay.destroy()
@@ -2139,6 +2284,7 @@ class TrackerApp(tk.Tk):
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", type=lambda value: int(value, 0), help="BattleModel address")
+    parser.add_argument("--pid", type=int, help="target game PID; auto-detected when omitted")
     args = parser.parse_args()
     TrackerApp(args).mainloop()
     return 0

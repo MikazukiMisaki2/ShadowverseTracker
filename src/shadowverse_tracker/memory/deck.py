@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 from typing import Iterable, Protocol
 
 from .battle import read_il2cpp_type_name, read_reference_collection
-from .discovery import find_pointer_references_many
+from .discovery import find_il2cpp_classes, find_pointer_references_many
 
 
 class DeckMemoryReader(Protocol):
@@ -104,15 +104,38 @@ def read_deck_info(reader: DeckMemoryReader, address: int) -> DeckInfoSnapshot:
     return result
 
 
-def find_deck_infos(reader, *, class_pointer_rva: int) -> tuple[DeckInfoSnapshot, ...]:
+def find_deck_infos(
+    reader,
+    *,
+    class_pointer_rva: int | None = None,
+    module_name: str = "GameAssembly.dll",
+) -> tuple[DeckInfoSnapshot, ...]:
     """Find all structurally valid, live DeckInfo objects in private memory."""
-    module = reader.module("GameAssembly.dll")
-    class_address = reader.read_u64(module.base_address + class_pointer_rva)
-    if not class_address:
+    if class_pointer_rva is not None and class_pointer_rva > 0:
+        module = reader.module(module_name)
+        class_address = reader.read_u64(module.base_address + class_pointer_rva)
+        classes = (class_address,) if class_address else ()
+    else:
+        # CN builds can omit the DeckInfo type-info global.  Resolve the
+        # runtime class by name, then apply the same structural validation as
+        # the fixed-RVA path.
+        classes = find_il2cpp_classes(
+            reader,
+            "DeckInfo",
+            "Wizard2.Domain.DeckInfoData",
+            module_name=module_name,
+        )
+        if not classes:
+            classes = find_il2cpp_classes(
+                reader,
+                "DeckInfo",
+                None,
+                module_name=module_name,
+            )
+    if not classes:
         return ()
     candidates = (
-        candidate
-        for candidate, _ in find_pointer_references_many(reader, (class_address,), maximum_hits=4096)
+        candidate for candidate, _ in find_pointer_references_many(reader, classes, maximum_hits=4096)
     )
     return decode_deck_info_candidates(reader, candidates)
 
@@ -124,7 +147,8 @@ def decode_deck_info_candidates(
     decks: dict[tuple[int, int, tuple[tuple[int, int], ...]], DeckInfoSnapshot] = {}
     for candidate in candidates:
         try:
-            if read_il2cpp_type_name(reader, candidate) != "Wizard2.Domain.DeckInfoData.DeckInfo":
+            type_name = read_il2cpp_type_name(reader, candidate)
+            if type_name != "DeckInfo" and not type_name.endswith(".DeckInfo"):
                 continue
             deck = read_deck_info(reader, candidate)
         except (OSError, ValueError, LookupError):

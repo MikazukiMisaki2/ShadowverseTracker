@@ -18,6 +18,40 @@ from .win32 import MEM_PRIVATE, ProcessReader
 DEFAULT_SCAN_CHUNK = 4 * 1024 * 1024
 
 
+def _runtime_type_name_matches(value: str, short_name: str) -> bool:
+    """Accept both namespaced and namespace-stripped IL2CPP type names."""
+    return value == short_name or value.endswith("." + short_name)
+
+
+def _find_runtime_string_addresses(
+    reader: ProcessReader,
+    module,
+    value: str,
+    *,
+    maximum_hits: int,
+    fallback_all_memory: bool = False,
+) -> tuple[int, ...]:
+    """Find a metadata string in the image, then in mapped runtime memory.
+
+    Most IL2CPP builds copy type names into ``GameAssembly.dll``.  The CN
+    player can leave them in a metadata mapping instead, so the broader scan
+    is opt-in and only used when the fast image scan has no hits.
+    """
+    pattern = value.encode() + b"\0"
+    addresses = tuple(
+        find_pattern_in_range(
+            reader,
+            pattern,
+            module.base_address,
+            module.size,
+            maximum_hits=maximum_hits,
+        )
+    )
+    if addresses or not fallback_all_memory:
+        return addresses
+    return tuple(find_pattern(reader, pattern, maximum_hits=maximum_hits))
+
+
 def find_pattern_in_range(
     reader: ProcessReader,
     pattern: bytes,
@@ -145,10 +179,11 @@ def find_class_instances(
     reader: ProcessReader,
     class_pointer_rvas: Mapping[str, int],
     *,
+    module_name: str = "GameAssembly.dll",
     maximum_hits: int = 8192,
 ) -> dict[str, tuple[int, ...]]:
     """Find candidate instances of several versioned classes in one heap pass."""
-    module = reader.module("GameAssembly.dll")
+    module = reader.module(module_name)
     class_to_key: dict[int, str] = {}
     for key, rva in class_pointer_rvas.items():
         class_address = reader.read_u64(module.base_address + rva)
@@ -169,20 +204,43 @@ def find_class_instances(
 def find_il2cpp_classes(
     reader: ProcessReader,
     name: str,
-    namespace: str,
+    namespace: str | None,
+    *,
+    module_name: str = "GameAssembly.dll",
 ) -> tuple[int, ...]:
-    """Resolve Il2CppClass pointers from the class and namespace C strings."""
-    module = reader.module("GameAssembly.dll")
+    """Resolve Il2CppClass pointers from runtime C strings.
+
+    A namespace narrows the scan for the official build.  A few regional
+    clients strip or rename presentation namespaces while retaining the
+    server model classes; passing ``None`` falls back to the class-name-only
+    scan in that case.
+    """
+    module = reader.module(module_name)
+    if namespace is None:
+        name_addresses = _find_runtime_string_addresses(
+            reader,
+            module,
+            name,
+            maximum_hits=512,
+            fallback_all_memory=True,
+        )
+        classes: set[int] = set()
+        for reference, _ in find_pointer_references_many(
+            reader,
+            name_addresses,
+            maximum_hits=4096,
+        ):
+            candidate = reference - 0x10
+            try:
+                if reader.read_c_string(reader.read_u64(candidate + 0x10), maximum=256) == name:
+                    classes.add(candidate)
+            except (OSError, ValueError):
+                continue
+        return tuple(sorted(classes))
     # Namespace strings are normally unique while short class names can occur in
     # dozens of symbols. Resolve classes from Il2CppClass.namespace at +0x18.
-    namespace_addresses = tuple(
-        find_pattern_in_range(
-            reader,
-            namespace.encode() + b"\0",
-            module.base_address,
-            module.size,
-            maximum_hits=256,
-        )
+    namespace_addresses = _find_runtime_string_addresses(
+        reader, module, namespace, maximum_hits=256
     )
     classes: set[int] = set()
     for reference, _ in find_pointer_references_many(
@@ -204,18 +262,37 @@ def find_battle_models(
     reader: ProcessReader,
     *,
     class_pointer_rva: int | None = None,
+    module_name: str = "GameAssembly.dll",
+    runtime_names_only: bool = False,
 ) -> tuple[int, ...]:
     """Find valid active BattleModel instances and reject stale/reused objects."""
     if class_pointer_rva is not None:
-        module = reader.module("GameAssembly.dll")
+        module = reader.module(module_name)
         class_address = reader.read_u64(module.base_address + class_pointer_rva)
         classes = (class_address,) if class_address else ()
+    elif runtime_names_only:
+        classes = find_il2cpp_classes(
+            reader,
+            "BattleModel",
+            None,
+            module_name=module_name,
+        )
     else:
         classes = find_il2cpp_classes(
             reader,
             "BattleModel",
             "Wizard2.Presentation.Battle",
+            module_name=module_name,
         )
+        if not classes:
+            # Regional builds can omit the presentation namespace from the
+            # native metadata even though the class remains discoverable.
+            classes = find_il2cpp_classes(
+                reader,
+                "BattleModel",
+                None,
+                module_name=module_name,
+            )
     models: set[int] = set()
     for candidate, _ in find_pointer_references_many(
         reader,
@@ -223,7 +300,9 @@ def find_battle_models(
         maximum_hits=4096,
     ):
         try:
-            if read_il2cpp_type_name(reader, candidate) != "Wizard2.Presentation.Battle.BattleModel":
+            if not _runtime_type_name_matches(
+                read_il2cpp_type_name(reader, candidate), "BattleModel"
+            ):
                 continue
             snapshot = read_battle_model(reader, candidate)
             root = snapshot.get("root")
@@ -237,6 +316,8 @@ def find_battle_models(
 def find_battle_roots(
     reader: ProcessReader,
     *,
+    module_name: str = "GameAssembly.dll",
+    runtime_names_only: bool = False,
     maximum_hits: int = 10000,
 ) -> tuple[int, ...]:
     """Find live ``BattleRootMpo`` objects used by Puzzle/teaching battles.
@@ -248,11 +329,23 @@ def find_battle_roots(
     modes and has a stable MessagePack-object layout; validate the decoded
     root before returning it to avoid stale heap objects.
     """
-    classes = find_il2cpp_classes(
-        reader,
-        "BattleRootMpo",
-        "Wizard2.ServerShared.MessagePackObjects",
+    classes = (
+        find_il2cpp_classes(reader, "BattleRootMpo", None, module_name=module_name)
+        if runtime_names_only
+        else find_il2cpp_classes(
+            reader,
+            "BattleRootMpo",
+            "Wizard2.ServerShared.MessagePackObjects",
+            module_name=module_name,
+        )
     )
+    if not classes:
+        classes = find_il2cpp_classes(
+            reader,
+            "BattleRootMpo",
+            None,
+            module_name=module_name,
+        )
     if not classes:
         return ()
     roots: set[int] = set()
@@ -262,8 +355,8 @@ def find_battle_roots(
         maximum_hits=maximum_hits,
     ):
         try:
-            if read_il2cpp_type_name(reader, candidate) != (
-                "Wizard2.ServerShared.MessagePackObjects.BattleRootMpo"
+            if not _runtime_type_name_matches(
+                read_il2cpp_type_name(reader, candidate), "BattleRootMpo"
             ):
                 continue
             root = read_battle_root(reader, candidate)
@@ -283,10 +376,28 @@ def find_battle_roots(
 def find_battle_view_server_data(
     reader: ProcessReader,
     *,
+    module_name: str = "GameAssembly.dll",
+    runtime_names_only: bool = False,
     expected_player_addresses: tuple[int, int] | None = None,
 ) -> tuple[int, ...]:
     """Find live BattleViewServerData objects, optionally matching one BattleRoot."""
-    classes = find_il2cpp_classes(reader, "BattleViewServerData", "Wizard2.View")
+    classes = (
+        find_il2cpp_classes(reader, "BattleViewServerData", None, module_name=module_name)
+        if runtime_names_only
+        else find_il2cpp_classes(
+            reader,
+            "BattleViewServerData",
+            "Wizard2.View",
+            module_name=module_name,
+        )
+    )
+    if not classes:
+        classes = find_il2cpp_classes(
+            reader,
+            "BattleViewServerData",
+            None,
+            module_name=module_name,
+        )
     values: set[int] = set()
     for candidate, _ in find_pointer_references_many(
         reader,
@@ -294,7 +405,9 @@ def find_battle_view_server_data(
         maximum_hits=4096,
     ):
         try:
-            if read_il2cpp_type_name(reader, candidate) != "Wizard2.View.BattleViewServerData":
+            if not _runtime_type_name_matches(
+                read_il2cpp_type_name(reader, candidate), "BattleViewServerData"
+            ):
                 continue
             players_collection = reader.read_u64(candidate + 0x10)
             players = read_reference_collection(reader, players_collection, maximum=2)

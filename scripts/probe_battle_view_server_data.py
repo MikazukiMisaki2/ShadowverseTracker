@@ -13,22 +13,33 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from shadowverse_tracker.memory.battle import read_il2cpp_type_name, read_reference_collection
 from shadowverse_tracker.memory.discovery import find_il2cpp_classes, find_pointer_references_many
-from shadowverse_tracker.memory.win32 import ProcessReader, find_process
+from shadowverse_tracker.memory.win32 import ProcessReader, find_process_candidates
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pid", type=int)
     args = parser.parse_args()
-    pid = args.pid or find_process("ShadowverseWB.exe").pid
+    pid = args.pid or find_process_candidates(
+        (
+            "ShadowverseWB.exe",
+            "MuMu模拟器x影之诗高清版.exe",
+            "MuMu模拟器x影之诗高清版.o",
+        )
+    )[0].pid
     with ProcessReader(pid) as reader:
         classes = find_il2cpp_classes(reader, "BattleViewServerData", "Wizard2.View")
+        if not classes:
+            classes = find_il2cpp_classes(reader, "BattleViewServerData", None)
         found = 0
         for candidate, _class_address in find_pointer_references_many(
             reader, classes, maximum_hits=4096
         ):
             try:
-                if read_il2cpp_type_name(reader, candidate) != "Wizard2.View.BattleViewServerData":
+                type_name = read_il2cpp_type_name(reader, candidate)
+                if type_name != "BattleViewServerData" and not type_name.endswith(
+                    ".BattleViewServerData"
+                ):
                     continue
                 players_address = reader.read_u64(candidate + 0x10)
                 players = read_reference_collection(reader, players_address, maximum=2)

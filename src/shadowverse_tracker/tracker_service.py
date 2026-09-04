@@ -19,7 +19,7 @@ from .deck_ledger import DeckLedger
 from .memory.battle import read_battle_model, read_battle_root_snapshot
 from .memory.deck import DeckInfoSnapshot
 from .memory.discovery import find_battle_models, find_battle_roots, find_battle_view_server_data
-from .memory.win32 import ProcessReader, find_process
+from .memory.win32 import ProcessInfo, ProcessReader, find_process_candidates
 from .opponent_hand import OpponentKnownHand
 from .card_catalog import canonical_card_id
 from .match_history import result_label
@@ -29,12 +29,21 @@ from .training_data import (
     compact_event_records,
     default_upload_queue_path,
 )
-from .versioning import verify_process_version
+from .versioning import VersionProfile, verify_process_version
 
 
 @dataclass(frozen=True)
 class TrackerConfig:
+    # The official Steam build and the China build have different executable
+    # names.  Keep ``process_name`` as the backwards-compatible preferred
+    # value, then try the known China names when automatic discovery is used.
     process_name: str = "ShadowverseWB.exe"
+    process_aliases: tuple[str, ...] = (
+        "MuMu模拟器x影之诗高清版.exe",
+        # Some Windows APIs expose the on-disk Unity player suffix instead of
+        # the PE's display name.  It is harmless to include both spellings.
+        "MuMu模拟器x影之诗高清版.o",
+    )
     model_address: int = 0
     pid: int | None = None
     interval: float = 0.25
@@ -50,6 +59,17 @@ class TrackerConfig:
     training_upload_url: str | None = None
     training_upload_enabled: bool = False
     training_upload_token: str | None = None
+
+    @property
+    def process_candidates(self) -> tuple[str, ...]:
+        """Names tried by automatic process discovery, in preference order."""
+        return tuple(
+            dict.fromkeys(
+                name.strip()
+                for name in (self.process_name, *self.process_aliases)
+                if name and name.strip()
+            )
+        )
 
 
 def without_addresses(value: object) -> object:
@@ -738,6 +758,39 @@ class TrackerService:
             "opponent_hand_knowledge": snapshot.get("opponent_hand_knowledge"),
         }
 
+    def _open_supported_reader(self) -> tuple[ProcessReader, VersionProfile, ProcessInfo]:
+        """Open a running build and select the matching hash-verified profile.
+
+        The China client and the Steam client may be installed side by side,
+        and the China launcher can leave both a wrapper and a Unity player
+        process visible to the OS.  Trying each configured name until its
+        GameAssembly profile verifies avoids attaching to an unrelated
+        process merely because it happens to be listed first.
+        """
+        if self.config.pid:
+            info = ProcessInfo(self.config.pid, self.config.process_name)
+            reader = ProcessReader(info.pid)
+            try:
+                return reader, verify_process_version(reader), info
+            except Exception:
+                reader.close()
+                raise
+
+        candidates = find_process_candidates(self.config.process_candidates)
+        failures: list[str] = []
+        for info in candidates:
+            reader: ProcessReader | None = None
+            try:
+                reader = ProcessReader(info.pid)
+                profile = verify_process_version(reader)
+                return reader, profile, info
+            except Exception as exc:
+                if reader is not None:
+                    reader.close()
+                failures.append(f"{info.name} (PID {info.pid})：{exc}")
+        detail = "；".join(failures)
+        raise RuntimeError(f"未找到可读取的支持版本进程{('：' + detail) if detail else ''}")
+
     def _run(self) -> None:
         if self.config.output_path:
             self.config.output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -759,23 +812,47 @@ class TrackerService:
             self._training_upload.flush()
         while not self._stop.is_set():
             try:
-                pid = self.config.pid or find_process(self.config.process_name).pid
-                self._pid = pid
-                with ProcessReader(pid) as reader:
-                    profile = verify_process_version(reader)
+                reader, profile, process = self._open_supported_reader()
+                self._pid = process.pid
+                with reader:
                     if self.on_status:
+                        build_label = (
+                            "国服"
+                            if process.name.casefold()
+                            in {
+                                "mumu模拟器x影之诗高清版.exe",
+                                "mumu模拟器x影之诗高清版.o",
+                            }
+                            else "Steam"
+                        )
                         if profile.auto_compatible:
-                            self.on_status(f"检测到游戏小版本更新，{profile.game_version}，核心结构校验通过")
+                            self.on_status(
+                                f"已连接{build_label}进程 {process.name}；检测到游戏小版本更新，"
+                                f"{profile.game_version}，核心结构校验通过"
+                            )
                         else:
-                            self.on_status(f"版本 {profile.game_version} 校验通过")
+                            self.on_status(
+                                f"已连接{build_label}进程 {process.name}；版本 {profile.game_version} 校验通过"
+                            )
                     consecutive_errors = 0
+                    # The China client has no stable presentation-layer
+                    # BattleViewServerData pointer.  Do not enter the
+                    # fallback all-memory scan from the polling thread; its
+                    # BattleRootMpo contains the legality projections needed
+                    # by the tracker and is decoded during each snapshot.
+                    if profile.dynamic_discovery:
+                        self._server_data_discovery_attempted = True
                     while not self._stop.is_set():
                         if self._model_address <= 0 and not self._root_only_mode:
                             if self.on_status:
                                 self.on_status("正在自动寻找对局对象…")
                             models = find_battle_models(
                                 reader,
-                                class_pointer_rva=profile.battle_model_class_pointer_rva,
+                                class_pointer_rva=(
+                                    profile.battle_model_class_pointer_rva or None
+                                ),
+                                module_name=profile.module_name,
+                                runtime_names_only=profile.dynamic_discovery,
                             )
                             if not models:
                                 # Puzzle/teaching battles expose a valid
@@ -783,7 +860,11 @@ class TrackerService:
                                 # do not create the normal BattleModel object.
                                 # Fall back to the shared root so the UI can
                                 # still display a trustworthy board snapshot.
-                                roots = find_battle_roots(reader)
+                                roots = find_battle_roots(
+                                    reader,
+                                    module_name=profile.module_name,
+                                    runtime_names_only=profile.dynamic_discovery,
+                                )
                                 if roots:
                                     # A newly discovered root may belong to a
                                     # different game after the process or
@@ -814,7 +895,7 @@ class TrackerService:
                                 self._battle_root_address = 0
                                 self._root_only_mode = False
                                 self._battle_view_server_data_address = 0
-                                self._server_data_discovery_attempted = False
+                                self._server_data_discovery_attempted = profile.dynamic_discovery
                                 self._server_data_next_retry_at = 0.0
                                 self._previous = None
                                 with self._deck_lock:
@@ -834,6 +915,8 @@ class TrackerService:
                                 self._stop.wait(self.config.interval)
                                 continue
                             if (
+                                not profile.dynamic_discovery
+                                and
                                 not self._server_data_discovery_attempted
                                 and time.monotonic() >= self._server_data_next_retry_at
                             ):
@@ -853,6 +936,8 @@ class TrackerService:
                                         )
                                 server_data = find_battle_view_server_data(
                                     reader,
+                                    module_name=profile.module_name,
+                                    runtime_names_only=profile.dynamic_discovery,
                                     expected_player_addresses=player_addresses,
                                 )
                                 if server_data:
@@ -867,6 +952,7 @@ class TrackerService:
                                 battle_view_server_data_address=(
                                     self._battle_view_server_data_address or None
                                 ),
+                                read_root_legal_actions=profile.dynamic_discovery,
                             )
                             self._attach_deck_state(snapshot)
                             self._emit(snapshot)
@@ -880,7 +966,7 @@ class TrackerService:
                                 self._battle_root_address = 0
                                 self._root_only_mode = False
                                 self._battle_view_server_data_address = 0
-                                self._server_data_discovery_attempted = False
+                                self._server_data_discovery_attempted = profile.dynamic_discovery
                                 self._server_data_next_retry_at = 0.0
                                 consecutive_errors = 0
                         self._stop.wait(self.config.interval)

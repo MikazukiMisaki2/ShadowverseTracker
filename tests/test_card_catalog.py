@@ -46,6 +46,12 @@ class CardCatalogTests(unittest.TestCase):
         self.assertEqual(get_card_name(10851131), "兔耳恶魔·莉蜜儿")
         self.assertEqual(get_card_name(90051121), "蝙蝠")
 
+    def test_china_runtime_ids_resolve_to_global_catalog(self) -> None:
+        # The China Windows client exposes the same cards through its 862…
+        # namespace.  Names and effects must use the shared global catalog.
+        self.assertEqual(get_card_name(86213130), get_card_name(10113130))
+        self.assertEqual(get_card_name(86212310), get_card_name(10012310))
+
     def test_pack_and_class_digits(self) -> None:
         self.assertEqual(card_pack(10934110), 9)
         self.assertEqual(card_class_id(10934110), 3)

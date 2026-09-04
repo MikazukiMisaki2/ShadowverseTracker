@@ -1,0 +1,11 @@
+{
+  "game_version": "11.9.0.1-cn",
+  "unity_version": "2022.3.62f2",
+  "process_name": "MuMu模拟器x影之诗高清版.exe",
+  "module_name": "GameAssembly.dll",
+  "gameassembly_sha256": "79BD3884CFA1B4989FDFF6273F64E5985D92E8A9FF702685E60936CC804E53E4",
+  "battle_model_class_pointer_rva": "0x0",
+  "deck_info_class_pointer_rva": "0x0",
+  "practice_battle_model_class_pointer_rva": "0x0",
+  "dynamic_discovery": true
+}

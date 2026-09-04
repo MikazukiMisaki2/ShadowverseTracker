@@ -29,9 +29,19 @@ class VersionProfile:
     deck_info_class_pointer_rva: int
     practice_battle_model_class_pointer_rva: int
     auto_compatible: bool = False
+    # Some regional clients retain the shared BattleRootMpo model but strip
+    # the presentation/deck type-info globals used by the Steam build.  A
+    # zero RVA tells discovery to resolve live classes from runtime names.
+    dynamic_discovery: bool = False
 
     @classmethod
     def from_dict(cls, value: dict[str, object]) -> "VersionProfile":
+        raw_dynamic = value.get("dynamic_discovery", False)
+        dynamic_discovery = (
+            raw_dynamic
+            if isinstance(raw_dynamic, bool)
+            else str(raw_dynamic).strip().casefold() in {"1", "true", "yes", "on"}
+        )
         return cls(
             game_version=str(value["game_version"]),
             unity_version=str(value["unity_version"]),
@@ -43,6 +53,7 @@ class VersionProfile:
             practice_battle_model_class_pointer_rva=int(
                 str(value["practice_battle_model_class_pointer_rva"]), 0
             ),
+            dynamic_discovery=dynamic_discovery,
         )
 
 
@@ -132,6 +143,11 @@ def _version_key(profile: VersionProfile) -> tuple[int, ...]:
 
 def _core_classes_match(reader: ProcessReader, module, profile: VersionProfile) -> bool:
     """Confirm that the latest profile's three global class pointers are intact."""
+    # There is no safe pointer identity to validate for a dynamic profile;
+    # exact GameAssembly hashing remains the trust boundary and live object
+    # discovery performs structural checks before decoding anything.
+    if any(getattr(profile, field) <= 0 for field, _namespace, _name in _CLASS_IDENTITIES):
+        return False
     try:
         for field, expected_namespace, expected_name in _CLASS_IDENTITIES:
             class_address = reader.read_u64(module.base_address + getattr(profile, field))

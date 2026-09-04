@@ -11,7 +11,7 @@ from ctypes import wintypes
 from dataclasses import dataclass
 import os
 import struct
-from typing import Iterator
+from typing import Iterable, Iterator
 
 
 if os.name != "nt":
@@ -193,6 +193,35 @@ def find_process(executable_name: str) -> ProcessInfo:
         pids = ", ".join(str(p.pid) for p in matches)
         raise ProcessLookupError(f"multiple {executable_name} processes found: {pids}; pass --pid")
     return matches[0]
+
+
+def find_process_candidates(executable_names: Iterable[str]) -> tuple[ProcessInfo, ...]:
+    """Return matching processes in the requested preference order.
+
+    The Windows and China-client builds use different process names.  A
+    caller should pass names in preference order; this helper keeps the
+    existing ambiguity protection of :func:`find_process` while allowing a
+    tracker to try another supported build when one is not running.  The
+    process list is captured once so a rapidly starting/stopping emulator
+    cannot produce a mixture of snapshots from different enumerations.
+    """
+    names = tuple(dict.fromkeys(name.strip() for name in executable_names if name and name.strip()))
+    if not names:
+        raise ValueError("at least one executable name is required")
+    processes = tuple(iter_processes())
+    matches_by_name: list[ProcessInfo] = []
+    for name in names:
+        matches = tuple(
+            process for process in processes if process.name.casefold() == name.casefold()
+        )
+        if len(matches) == 1:
+            matches_by_name.append(matches[0])
+        elif len(matches) > 1:
+            pids = ", ".join(str(process.pid) for process in matches)
+            raise ProcessLookupError(f"multiple {name} processes found: {pids}; pass --pid")
+    if not matches_by_name:
+        raise ProcessLookupError(f"process not found: {', '.join(names)}")
+    return tuple(matches_by_name)
 
 
 def iter_modules(pid: int) -> Iterator[ModuleInfo]:

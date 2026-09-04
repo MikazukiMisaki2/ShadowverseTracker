@@ -1,6 +1,6 @@
 # Shadowverse Tracker
 
-《Shadowverse: Worlds Beyond》Windows 只读记牌器。Tracker 会读取本机游戏进程中的对局状态，用于显示牌库、手牌、场面、计数器和对局记录；不会修改游戏文件、注入 DLL 或暂停游戏。
+《Shadowverse: Worlds Beyond》Windows 只读记牌器。Tracker 会读取本机游戏进程中的对局状态，用于显示牌库、手牌、场面、计数器和对局记录；不会修改游戏文件、注入 DLL 或暂停游戏。当前同时支持 Steam 版与国服 MuMu 配套的 Windows Unity 客户端；国服使用共享战场根对象的运行时发现，首次适配建议先在练习/对战页面确认状态栏显示“已连接国服进程”。
 
 ## 开始使用
 
@@ -10,6 +10,42 @@
 4. Tracker 会自动寻找游戏和当前对局，不需要填写地址或点击“开始读取”。
 5. 在“当前牌组”中选择或导入自己的牌组，记牌器才能准确维护剩余牌库。
 
+### 国服直接启动
+
+国服启动器会启动一个 Windows Unity 客户端，并不要求 Tracker 读取模拟器的 Android 内存。Tracker 会自动识别以下国服进程：`MuMu模拟器x影之诗高清版.exe`（部分 Windows API 会显示磁盘文件的 `.o` 后缀），并校验同目录的 `GameAssembly.dll`。
+
+在已安装国服客户端的电脑上，可以先尝试直接启动 Unity 文件（把路径改成自己的安装位置）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\launch_china_shadowverse.ps1 `
+  -Mode Direct -GamePath 'D:\Games\Shadowverse\MuMu模拟器x影之诗高清版.o'
+```
+
+也可以使用仓库附带的脚本自动查找客户端；找不到 Windows 文件时会回退到 MuMu CLI：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\launch_china_shadowverse.ps1
+```
+
+发布包中的同名脚本会与 `ShadowverseTracker.exe` 放在一起；源码运行时直接使用仓库的 `scripts` 目录即可。
+
+明确使用 MuMu CLI（本机示例为 VM 1、国服包名 `com.netease.yzs.hd`）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\launch_china_shadowverse.ps1 `
+  -Mode MumuCli -VmIndex 1 -PackageName com.netease.yzs.hd
+```
+
+若直接运行 `.o` 后无法完成登录、更新或启动，继续使用官方 `launcher.exe` 即可，Tracker 仍会在游戏进程出现后自动连接：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\launch_china_shadowverse.ps1 -Mode Launcher
+```
+
+当前已内置国服 Windows 11.9.0.1 配置（`GameAssembly.dll` SHA-256：`79BD3884CFA1B4989FDFF6273F64E5985D92E8A9FF702685E60936CC804E53E4`），版本配置按哈希匹配；客户端更新后如果显示“不支持当前 GameAssembly”，请保留该提示中的哈希并反馈。游戏和 Tracker 需要使用相同权限运行；若游戏以管理员权限启动，请也以管理员权限启动 Tracker。不要为了绕过启动器、更新或账号验证修改游戏文件。
+
+国服部分卡牌在对局对象中使用 `862…` 运行时 ID，与牌组编辑器使用的全球卡牌 ID 不同。Tracker 会通过随程序附带的 `cn_card_ids.json` 自动转换，因此手牌、场面、抽牌和事件记录仍显示中文卡名；若新版本出现“未知卡牌”，通常是客户端新增了尚未收录的 ID，请连同 GameAssembly 哈希一并反馈。
+
 ## 主要功能
 
 - 显示我方手牌、双方公开场面、生命值、PP 和牌库数量。
@@ -17,7 +53,8 @@
 - 根据已选择牌组维护剩余牌库；已抽空的卡牌会保留并标记为 `0/3`。
 - 提供悬浮牌库窗口，方便在游戏中查看。
 - 统计总胜率、对手职业、先手/后手等本地对局数据。
-- 计算普通抽牌概率，以及对手当前和下回合的 Key 牌概率。
+- 主界面的“概率计算”窗口提供普通抽牌概率、对手当前/下回合 Key 牌概率，以及“天晶深渊”伤害概率计算。
+- “天晶深渊”按每个信仰点独立以 `1/3` 概率分配给 X/Y/Z 的二项分布计算 `P(Z≥下限)`。
 - 自动按对局生成适合训练数据管线的紧凑回放记录；记录使用卡牌、进化、攻击、特效、
   抽牌、爆牌，以及从牌库/生成区直接进入战场的卡牌。
 

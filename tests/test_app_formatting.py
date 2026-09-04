@@ -141,6 +141,16 @@ class AppFormattingTests(unittest.TestCase):
         for keyword in ("守护", "谢幕曲", "必杀", "无法被攻击", "无法被选中为目标", "突进", "疾驰"):
             self.assertIn(keyword, lines[1])
 
+    def test_china_runtime_hand_and_field_cards_are_named(self) -> None:
+        hand_line = TrackerApp._format_card_line(
+            {"card_id": 86213130, "base_card_id": 86213130, "cost": 6}
+        )
+        field_lines = TrackerApp._format_field(
+            [{"card_id": 86213210, "card_type": 2, "cost": 3, "countdown": 2}]
+        )
+        self.assertNotIn("未知卡牌", hand_line)
+        self.assertNotIn("未知卡牌", field_lines[0])
+
 
 if __name__ == "__main__":
     unittest.main()
