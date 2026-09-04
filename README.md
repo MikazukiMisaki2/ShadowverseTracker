@@ -21,7 +21,7 @@ python -m pip install -e .
 python .\run_tracker.py
 ```
 
-当前旧版发行包与迁移版发行包分别保存在 `dist\ShadowverseTracker` 和 `dist\ShadowverseTracker-PySide6`；两者均为 onedir 目录，启动时请保留目录内的 `_internal` 与 `SV_WB_Cards`。
+当前旧版发行包与迁移版发行包分别保存在 `dist\ShadowverseTracker-legacy` 和 `dist\ShadowverseTracker`；两者均为 onedir 目录，启动时请保留目录内的 `_internal` 与 `SV_WB_Cards`。此前生成的迁移包备份在 `dist\ShadowverseTracker-PySide6`。
 
 ### 国服直接启动
 
