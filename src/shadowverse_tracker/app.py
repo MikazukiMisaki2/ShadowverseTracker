@@ -68,7 +68,10 @@ class TrackerApp(tk.Tk):
         self._last_model_address: str | None = None
         self._last_render_turn: int | None = None
         self._last_render_result: int | None = None
-        self._deck_choice_keys: list[str] = []
+        # The first combobox entry is a deliberate empty selection.  Keep a
+        # parallel ``None`` sentinel so users can detach a deck without a
+        # separate clear button.
+        self._deck_choice_keys: list[str | None] = []
         self._opponent_known_hand = OpponentKnownHand()
         self._last_snapshot: dict[str, object] | None = None
         self._overlay: tk.Toplevel | None = None
@@ -92,104 +95,93 @@ class TrackerApp(tk.Tk):
             style.theme_use("clam")
         except tk.TclError:
             pass
-        style.configure("App.TFrame", background="#dfe7f0")
-        style.configure("TLabelframe", background="#eaf0f6", foreground="#182635", bordercolor="#9aabbd", relief="flat")
-        style.configure("TLabelframe.Label", background="#eaf0f6", foreground="#182635", font=("Segoe UI", 10, "bold"))
-        style.configure("TLabel", background="#eaf0f6", foreground="#182635")
-        style.configure("TButton", padding=(9, 5), font=("Segoe UI", 9))
-        style.configure("TCheckbutton", background="#eaf0f6", foreground="#182635")
-        style.map("TCheckbutton", background=[("active", "#d6e1ec")])
+        style.configure("App.TFrame", background="#e4ecf4")
+        style.configure("TLabelframe", background="#edf3f8", foreground="#182635", bordercolor="#a7b8c8", relief="flat")
+        style.configure("TLabelframe.Label", background="#edf3f8", foreground="#182635", font=("Segoe UI", 9, "bold"))
+        style.configure("TLabel", background="#edf3f8", foreground="#182635", font=("Segoe UI", 9))
+        style.configure("TButton", padding=(8, 3), font=("Segoe UI", 9))
+        style.configure("TCheckbutton", background="#edf3f8", foreground="#182635", font=("Segoe UI", 9))
+        style.map("TCheckbutton", background=[("active", "#d9e6f1")])
         style.configure("TEntry", fieldbackground="#f6f8fb", foreground="#182635", insertcolor="#182635")
         style.configure("TSpinbox", fieldbackground="#f6f8fb", foreground="#182635", insertcolor="#182635")
         style.configure("TCombobox", fieldbackground="#f6f8fb", background="#d4e0ec", foreground="#182635")
-        style.configure("TPanedwindow", background="#dfe7f0")
+        style.configure("TPanedwindow", background="#d0dce8")
+        style.configure("Status.TFrame", background="#f6f9fc")
+        style.configure("Status.TLabel", background="#f6f9fc", foreground="#23435e", font=("Segoe UI", 9, "bold"))
+        style.configure("StatusHint.TLabel", background="#f6f9fc", foreground="#64798d", font=("Segoe UI", 8))
+        style.configure("StatusDot.TLabel", background="#f6f9fc", foreground="#b17a14", font=("Segoe UI", 12, "bold"))
+        style.configure("StatusDot.Ok.TLabel", background="#f6f9fc", foreground="#2b8a63", font=("Segoe UI", 12, "bold"))
+        style.configure("StatusDot.Error.TLabel", background="#f6f9fc", foreground="#c44d58", font=("Segoe UI", 12, "bold"))
+        style.configure("StatusDot.Idle.TLabel", background="#f6f9fc", foreground="#718396", font=("Segoe UI", 12, "bold"))
+        style.configure("Summary.TLabel", background="#edf3f8", foreground="#234f73", font=("Segoe UI", 9, "bold"))
+        style.configure("PaneHeading.TLabel", background="#edf3f8", foreground="#315f83", font=("Segoe UI", 9, "bold"))
+        style.configure("Muted.TLabel", background="#edf3f8", foreground="#64798d", font=("Segoe UI", 8))
 
-        root = ttk.Frame(self, padding=12, style="App.TFrame")
+        root = ttk.Frame(self, padding=8, style="App.TFrame")
         root.pack(fill="both", expand=True)
 
-        decks = ttk.LabelFrame(root, text="本地牌组仓库", padding=8)
+        decks = ttk.LabelFrame(root, text="牌组控制", padding=(8, 5))
         decks.pack(fill="x")
-        decks.columnconfigure(1, weight=1)
+        # Keep the deck selector and import field at a predictable compact
+        # width.  A weighted column here would push every action button to
+        # the far right even when the selector itself is short.
+        decks.columnconfigure(1, weight=0)
         ttk.Label(decks, text="当前牌组").grid(row=0, column=0, sticky="w")
         self.deck_choice_var = tk.StringVar()
         self.deck_choice = ttk.Combobox(
             decks,
             textvariable=self.deck_choice_var,
             state="readonly",
-            width=48,
+            # Match the visible width of the import field below so the
+            # control row stays compact and predictable.
+            width=52,
         )
-        self.deck_choice.grid(row=0, column=1, padx=6, sticky="ew")
+        self.deck_choice.grid(row=0, column=1, padx=6, sticky="w")
         self.deck_choice.bind("<<ComboboxSelected>>", self._select_deck)
-        ttk.Button(decks, text="删除牌组", command=self._delete_deck).grid(
-            row=0, column=2, padx=(6, 0)
+        ttk.Button(decks, text="删除", command=self._delete_deck, width=4).grid(
+            row=0, column=2, padx=(4, 0)
         )
-        ttk.Button(decks, text="清空当前牌组", command=self._clear_deck_selection).grid(
-            row=0, column=3, padx=(6, 0)
+        ttk.Button(decks, text="编辑牌组", command=self._edit_current_deck, width=8).grid(
+            row=0, column=3, padx=(4, 0)
         )
-        # Match recording is opt-in and is started manually by the checkbox.
-        self.record_matches_var = tk.BooleanVar(value=False)
+        # Keep local win/loss recording enabled by default; the checkbox can
+        # still disable it for users who only want the tracker view.
+        self.record_matches_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(
             decks,
-            text="启用胜负统计（本地）",
+            text="本地胜负统计",
             variable=self.record_matches_var,
             command=self._toggle_match_recording,
-        ).grid(row=0, column=4, padx=(12, 0))
-        ttk.Button(decks, text="对局统计", command=self._show_match_stats).grid(
-            row=0, column=5, padx=(6, 0)
-        )
-        ttk.Button(decks, text="编辑当前卡组", command=self._edit_current_deck).grid(
-            row=0, column=6, padx=(6, 0)
+        ).grid(row=0, column=4, padx=(10, 0))
+        ttk.Button(decks, text="详细统计", command=self._show_match_stats, width=8).grid(
+            row=0, column=5, padx=(4, 0)
         )
         self.overlay_button = ttk.Button(
-            decks, text="打开悬浮记牌器", command=self._toggle_overlay
+            decks, text="悬浮记牌器", command=self._toggle_overlay, width=8
         )
-        self.overlay_button.grid(row=0, column=7, padx=(6, 0))
-        ttk.Button(decks, text="概率计算", command=self._open_probability_window).grid(
-            row=0, column=8, padx=(6, 0)
-        )
+        self.overlay_button.grid(row=0, column=6, padx=(4, 0))
 
-        active_deck = self._active_saved_deck()
-        default_class = class_name(active_deck.class_id) if active_deck else class_name(1)
-        default_mode = "轮换" if active_deck is None or active_deck.format_version == 1 else "无限"
-        ttk.Label(decks, text="登记职业").grid(row=1, column=0, sticky="w", pady=(8, 0))
-        self.import_class_var = tk.StringVar(value=default_class)
-        self.import_class_choice = ttk.Combobox(
-            decks,
-            textvariable=self.import_class_var,
-            values=[CLASS_NAMES[index] for index in sorted(CLASS_NAMES)],
-            state="readonly",
-            width=14,
-        )
-        self.import_class_choice.grid(row=1, column=1, padx=6, pady=(8, 0), sticky="w")
-        ttk.Label(decks, text="模式").grid(row=1, column=2, sticky="e", pady=(8, 0))
-        self.import_mode_var = tk.StringVar(value=default_mode)
-        ttk.Combobox(
-            decks,
-            textvariable=self.import_mode_var,
-            values=("轮换", "无限"),
-            state="readonly",
-            width=10,
-        ).grid(row=1, column=3, padx=6, pady=(8, 0), sticky="w")
-        ttk.Label(
-            decks,
-            text="新增卡牌仅显示所选职业与中立；轮换为最新六个卡包",
-        ).grid(row=1, column=4, columnspan=2, sticky="w", pady=(8, 0))
-
-        ttk.Label(decks, text="链接 / 四位牌组码").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        # Official links and four-character codes already contain the class
+        # and format.  Keep import to one compact row and use those parsed
+        # values instead of asking users to enter them a second time.
+        ttk.Label(decks, text="导入链接 / 牌组码").grid(row=1, column=0, sticky="w", pady=(5, 0))
         self.deck_url_var = tk.StringVar()
-        ttk.Entry(decks, textvariable=self.deck_url_var).grid(
-            row=2, column=1, columnspan=4, padx=6, pady=(8, 0), sticky="ew"
+        ttk.Entry(decks, textvariable=self.deck_url_var, width=54).grid(
+            row=1, column=1, padx=6, pady=(5, 0), sticky="w"
         )
-        ttk.Button(decks, text="导入并保存", command=self._import_deck).grid(
-            row=2, column=5, padx=(6, 0), pady=(8, 0)
+        ttk.Button(decks, text="保存", command=self._import_deck, width=5).grid(
+            row=1, column=2, padx=(4, 0), pady=(5, 0)
         )
         self.deck_status_var = tk.StringVar()
-        ttk.Label(decks, textvariable=self.deck_status_var).grid(
-            row=3, column=0, columnspan=6, sticky="w", pady=(8, 0)
+        ttk.Label(decks, textvariable=self.deck_status_var, style="Muted.TLabel").grid(
+            row=2, column=0, columnspan=9, sticky="w", pady=(4, 0)
         )
 
-        connection = ttk.LabelFrame(root, text="只读连接", padding=8)
-        connection.pack(fill="x", pady=(10, 0))
+        connection = ttk.LabelFrame(root, text="实时连接", padding=(8, 5))
+        connection.pack(fill="x", pady=(7, 0))
+        connection.columnconfigure(0, weight=1)
+        connection.columnconfigure(5, weight=1)
+        connection.columnconfigure(6, weight=1)
         self.model_label = ttk.Label(connection, text="BattleModel 地址")
         self.model_label.grid(row=0, column=0, sticky="w")
         self.model_var = tk.StringVar(value=f"0x{args.model:X}" if args.model else "")
@@ -199,33 +191,68 @@ class TrackerApp(tk.Tk):
         self.model_hint.grid(row=0, column=2, sticky="w")
         self.connect_button = ttk.Button(connection, text="开始读取", command=self._connect)
         self.connect_button.grid(row=0, column=3, padx=(12, 0))
-        self.status_var = tk.StringVar(value="未连接（自动寻找 Steam / 国服客户端）")
-        ttk.Label(connection, textvariable=self.status_var).grid(row=1, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        self.status_var = tk.StringVar(value="未连接 · 自动识别客户端")
+        self.status_var.trace_add("write", self._sync_status_indicator)
+        self.status_dot_var = tk.StringVar(value="●")
+        status_bar = ttk.Frame(connection, padding=(7, 3), style="Status.TFrame")
+        status_bar.grid(row=0, column=0, columnspan=5, sticky="nsew", padx=(0, 8))
+        status_bar.columnconfigure(1, weight=1)
+        self.status_dot = ttk.Label(status_bar, textvariable=self.status_dot_var, style="StatusDot.TLabel")
+        self.status_dot.grid(row=0, column=0, rowspan=3, padx=(0, 6), sticky="nw")
+        ttk.Label(status_bar, textvariable=self.status_var, style="Status.TLabel").grid(
+            row=0, column=1, sticky="w"
+        )
+        ttk.Label(status_bar, text="连接方式", style="StatusHint.TLabel").grid(
+            row=1, column=1, sticky="w", pady=(1, 0)
+        )
+        self.connection_mode_var = tk.StringVar(value="自动")
+        self.connection_mode_choice = ttk.Combobox(
+            status_bar,
+            textvariable=self.connection_mode_var,
+            values=("自动", "Steam", "国服"),
+            state="readonly",
+            width=7,
+        )
+        self.connection_mode_choice.grid(row=2, column=1, padx=(0, 0), pady=(1, 0), sticky="w")
+        self.connection_mode_choice.bind("<<ComboboxSelected>>", self._change_connection_mode)
+        self._sync_status_indicator()
         self.model_label.grid_remove()
         self.model_entry.grid_remove()
         self.model_hint.grid_remove()
         self.connect_button.grid_remove()
-        self.opponent_counter_var = tk.StringVar(value="通用计数器：等待对局数据")
-        self.class_counter_var = tk.StringVar(value="职业计数器：等待对局数据")
-        counter_frame = ttk.LabelFrame(connection, text="通用计数器")
-        counter_frame.grid(row=0, column=5, rowspan=4, padx=(18, 0), sticky="nsew")
-        ttk.Label(counter_frame, textvariable=self.opponent_counter_var, justify="left", anchor="nw").pack(
-            fill="both", expand=True, padx=8, pady=6
+        self.opponent_counter_var = tk.StringVar(value="等待对局数据")
+        self.class_counter_var = tk.StringVar(value="等待对局数据")
+        counter_frame = ttk.LabelFrame(connection, text="通用计数器", padding=(5, 3))
+        counter_frame.grid(row=0, column=5, padx=(0, 4), sticky="nsew")
+        ttk.Label(counter_frame, textvariable=self.opponent_counter_var, justify="left", anchor="nw", style="Muted.TLabel").pack(
+            fill="both", expand=True, padx=3, pady=1
         )
-        class_frame = ttk.LabelFrame(connection, text="对手职业计数器")
-        class_frame.grid(row=0, column=6, rowspan=4, padx=(8, 0), sticky="nsew")
-        ttk.Label(class_frame, textvariable=self.class_counter_var, justify="left", anchor="nw").pack(
-            fill="both", expand=True, padx=8, pady=6
+        class_frame = ttk.LabelFrame(connection, text="职业计数器", padding=(5, 3))
+        class_frame.grid(row=0, column=6, sticky="nsew")
+        ttk.Label(class_frame, textvariable=self.class_counter_var, justify="left", anchor="nw", style="Muted.TLabel").pack(
+            fill="both", expand=True, padx=3, pady=1
         )
-        connection.columnconfigure(5, weight=1)
-        connection.columnconfigure(6, weight=1)
+        probability_frame = ttk.LabelFrame(connection, text="概率计算", padding=(5, 3))
+        probability_frame.grid(row=0, column=7, padx=(4, 0), sticky="nsew")
+        connection.columnconfigure(7, weight=1)
+        ttk.Button(
+            probability_frame,
+            text="打开计算器",
+            command=self._open_probability_window,
+        ).pack(fill="x", padx=3, pady=(1, 2))
+        ttk.Label(
+            probability_frame,
+            text="抽牌 · Key · 天晶",
+            style="Muted.TLabel",
+            anchor="center",
+        ).pack(fill="x", padx=3, pady=(0, 1))
 
         details = ttk.PanedWindow(root, orient="horizontal")
-        details.pack(fill="both", expand=True, pady=(10, 0))
-        self.hand_text = self._overview_panel(details)
-        self.deck_text = self._text_panel(details, "剩余牌库")
-        self.field_text = self._text_panel(details, "目前对局")
-        self.history_text = self._text_panel(details, "最近记录")
+        details.pack(fill="both", expand=True, pady=(7, 0))
+        self.hand_text = self._overview_panel(details, weight=1)
+        self.deck_text = self._text_panel(details, "剩余牌库", weight=1)
+        self.field_text = self._text_panel(details, "目前对局", weight=2)
+        self.history_text = self._text_panel(details, "最近记录", weight=1)
         self.deck_text.tag_configure("deck_header", font=("Segoe UI", 14, "bold"))
         self.deck_text.tag_configure("deck_section", font=("Segoe UI", 10, "bold"), foreground="#24527a")
         self._build_probability_window()
@@ -239,16 +266,19 @@ class TrackerApp(tk.Tk):
 
         window = tk.Toplevel(self)
         window.title("Shadowverse Tracker - 概率计算")
-        window.geometry("1000x430")
-        window.minsize(760, 360)
+        # Use a portrait layout so every calculator remains usable on a
+        # narrow window and no long key-card row is clipped off-screen.
+        window.geometry("520x660")
+        window.minsize(440, 620)
         window.transient(self)
         window.protocol("WM_DELETE_WINDOW", window.withdraw)
         window.columnconfigure(0, weight=1)
+        window.rowconfigure(0, weight=1)
         body = ttk.Frame(window, padding=10, style="App.TFrame")
         body.grid(row=0, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
 
-        draw_frame = ttk.LabelFrame(body, text="抽牌概率", padding=6)
+        draw_frame = ttk.LabelFrame(body, text="抽牌概率", padding=(8, 6))
         draw_frame.grid(row=0, column=0, sticky="ew")
         draw_frame.columnconfigure(1, weight=1)
         ttk.Label(draw_frame, text="目标卡牌").grid(row=0, column=0, sticky="w")
@@ -257,21 +287,23 @@ class TrackerApp(tk.Tk):
             draw_frame,
             textvariable=self.probability_card_var,
             state="readonly",
-            width=42,
+            width=34,
         )
-        self.probability_card_choice.grid(row=0, column=1, padx=6, sticky="ew")
-        ttk.Label(draw_frame, text="未来抽牌").grid(row=0, column=2, sticky="e")
+        self.probability_card_choice.grid(row=0, column=1, columnspan=2, padx=6, sticky="ew")
+        ttk.Label(draw_frame, text="未来抽牌").grid(row=1, column=0, pady=(6, 0), sticky="w")
         self.probability_draws_var = tk.StringVar(value="1")
-        ttk.Entry(draw_frame, textvariable=self.probability_draws_var, width=6).grid(
-            row=0, column=3, padx=(6, 0), sticky="w"
+        ttk.Entry(draw_frame, textvariable=self.probability_draws_var, width=7).grid(
+            row=1, column=1, padx=6, pady=(6, 0), sticky="w"
         )
         self.probability_result_var = tk.StringVar(value="选择牌库中的卡牌后计算")
         ttk.Button(draw_frame, text="计算", command=self._calculate_draw_probability).grid(
-            row=0, column=4, padx=(8, 0), sticky="w"
+            row=1, column=2, padx=(6, 0), pady=(6, 0), sticky="e"
         )
-        ttk.Label(draw_frame, textvariable=self.probability_result_var).grid(
-            row=1, column=0, columnspan=5, sticky="w", pady=(6, 0)
-        )
+        ttk.Label(
+            draw_frame,
+            textvariable=self.probability_result_var,
+            wraplength=390,
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
         self._probability_cards: dict[str, tuple[int, int, int]] = {}
 
         # Opponent key-card probability. Deck/hand/swap values are filled from
@@ -279,10 +311,11 @@ class TrackerApp(tk.Tk):
         # assumptions need to be supplied by the user.
         key_frame = ttk.LabelFrame(
             body,
-            text="对手关键牌概率（固定首回合抽1张，起手换4张模型）",
-            padding=6,
+            text="对手关键牌概率（首回合抽1张，起手换4张模型）",
+            padding=(8, 6),
         )
         key_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        key_frame.columnconfigure(1, weight=1)
         self.key_strategy_var = tk.StringVar(value="unknown")
         ttk.Label(key_frame, text="策略").grid(row=0, column=0, sticky="w")
         strategy_choice = ttk.Combobox(
@@ -292,7 +325,20 @@ class TrackerApp(tk.Tk):
             state="readonly",
             width=9,
         )
-        strategy_choice.grid(row=0, column=1, padx=4)
+        strategy_choice.grid(row=0, column=1, padx=6, sticky="w")
+        self.key_deck_remaining_var = tk.StringVar(value="—")
+        self.key_hand_size_var = tk.StringVar(value="—")
+        self.key_mulligan_var = tk.StringVar(value="—")
+        for row, label, variable in (
+            (1, "牌库剩余", self.key_deck_remaining_var),
+            (2, "未知手牌", self.key_hand_size_var),
+            (3, "对手换牌数", self.key_mulligan_var),
+        ):
+            ttk.Label(key_frame, text=label).grid(row=row, column=0, pady=(5, 0), sticky="w")
+            ttk.Label(key_frame, textvariable=variable, width=7, anchor="w").grid(
+                row=row, column=1, padx=6, pady=(5, 0), sticky="w"
+            )
+
         self.key_keep1_var = tk.StringVar(value="0")
         self.key_keep2_var = tk.StringVar(value="0")
         self.key_seen1_var = tk.StringVar(value="0")
@@ -301,81 +347,59 @@ class TrackerApp(tk.Tk):
         self.key_limit_var = tk.StringVar(value="1")
         self.key_seen_var = tk.StringVar(value="0")
         self._key_policy_entries: list[ttk.Entry] = []
-        for column, label, variable in (
-            (2, "留1类型", self.key_keep1_var),
-            (4, "留2类型", self.key_keep2_var),
-            (6, "已见留1", self.key_seen1_var),
-            (8, "已见留2", self.key_seen2_var),
+
+        for row, left_label, left_var, right_label, right_var in (
+            (4, "留1类型", self.key_keep1_var, "留2类型", self.key_keep2_var),
+            (5, "已见留1", self.key_seen1_var, "已见留2", self.key_seen2_var),
+            (6, "Key投入", self.key_copies_var, "Key留牌上限", self.key_limit_var),
         ):
-            ttk.Label(key_frame, text=label).grid(
-                row=0, column=column, padx=(8, 2), sticky="e"
-            )
-            entry = ttk.Entry(key_frame, textvariable=variable, width=5)
-            entry.grid(row=0, column=column + 1, padx=2)
-            self._key_policy_entries.append(entry)
-        self.key_deck_remaining_var = tk.StringVar(value="—")
-        self.key_hand_size_var = tk.StringVar(value="—")
-        self.key_mulligan_var = tk.StringVar(value="—")
-        for column, label, variable in (
-            (10, "牌库剩余", self.key_deck_remaining_var),
-            (12, "未知手牌", self.key_hand_size_var),
-            (14, "对手换牌数", self.key_mulligan_var),
-        ):
-            ttk.Label(key_frame, text=label).grid(
-                row=0, column=column, padx=(8, 2), sticky="e"
-            )
-            ttk.Label(
-                key_frame,
-                textvariable=variable,
-                width=5,
-                relief="sunken",
-                anchor="center",
-            ).grid(row=0, column=column + 1, padx=2)
-        for column, label, variable in (
-            (0, "Key投入", self.key_copies_var),
-            (3, "Key留牌上限", self.key_limit_var),
-            (6, "Key已见", self.key_seen_var),
-        ):
-            ttk.Label(key_frame, text=label).grid(
-                row=1, column=column, padx=(8, 2), pady=(5, 0), sticky="e"
-            )
-            entry = ttk.Entry(key_frame, textvariable=variable, width=5)
-            entry.grid(row=1, column=column + 1, padx=2, pady=(5, 0))
-            if variable is self.key_limit_var:
-                self._key_policy_entries.append(entry)
+            ttk.Label(key_frame, text=left_label).grid(row=row, column=0, padx=(0, 4), pady=(5, 0), sticky="w")
+            left_entry = ttk.Entry(key_frame, textvariable=left_var, width=6)
+            left_entry.grid(row=row, column=1, padx=6, pady=(5, 0), sticky="w")
+            if left_var is not self.key_copies_var:
+                self._key_policy_entries.append(left_entry)
+            ttk.Label(key_frame, text=right_label).grid(row=row, column=2, padx=(10, 4), pady=(5, 0), sticky="e")
+            right_entry = ttk.Entry(key_frame, textvariable=right_var, width=6)
+            right_entry.grid(row=row, column=3, padx=6, pady=(5, 0), sticky="w")
+            self._key_policy_entries.append(right_entry)
+
+        ttk.Label(key_frame, text="Key已见").grid(row=7, column=0, pady=(5, 0), sticky="w")
+        key_seen_entry = ttk.Entry(key_frame, textvariable=self.key_seen_var, width=6)
+        key_seen_entry.grid(row=7, column=1, padx=6, pady=(5, 0), sticky="w")
         self.key_probability_result_var = tk.StringVar(value="等待对手对局数据")
         ttk.Button(
             key_frame,
             text="计算对手Key概率",
             command=self._calculate_opponent_key_probability,
-        ).grid(row=1, column=8, columnspan=3, padx=6, pady=(5, 0), sticky="w")
+        ).grid(row=7, column=2, columnspan=2, padx=(10, 4), pady=(5, 0), sticky="ew")
         ttk.Button(
             key_frame,
-            text="计算对手下回合Key概率",
+            text="计算下回合Key概率",
             command=self._calculate_opponent_next_turn_key_probability,
-        ).grid(row=1, column=11, columnspan=4, padx=6, pady=(5, 0), sticky="w")
-        ttk.Label(key_frame, textvariable=self.key_probability_result_var).grid(
-            row=2, column=0, columnspan=17, sticky="w", pady=(5, 0)
-        )
+        ).grid(row=8, column=0, columnspan=4, pady=(6, 0), sticky="ew")
+        ttk.Label(
+            key_frame,
+            textvariable=self.key_probability_result_var,
+            wraplength=390,
+        ).grid(row=9, column=0, columnspan=8, sticky="w", pady=(6, 0))
         strategy_choice.bind("<<ComboboxSelected>>", self._sync_key_strategy_inputs)
 
         faith_frame = ttk.LabelFrame(
             body,
             text="天晶深渊伤害概率（X/Y/Z 独立逐点分配）",
-            padding=6,
+            padding=(8, 6),
         )
         faith_frame.grid(row=2, column=0, sticky="ew", pady=(8, 0))
-        ttk.Label(faith_frame, text="信仰总值 X+Y+Z").grid(
-            row=0, column=0, sticky="w"
-        )
+        faith_frame.columnconfigure(1, weight=1)
+        ttk.Label(faith_frame, text="信仰总值 X+Y+Z").grid(row=0, column=0, sticky="w")
         self.faith_total_var = tk.StringVar(value="")
-        ttk.Entry(faith_frame, textvariable=self.faith_total_var, width=7).grid(
-            row=0, column=1, padx=(6, 16)
+        ttk.Entry(faith_frame, textvariable=self.faith_total_var, width=8).grid(
+            row=0, column=1, padx=6, sticky="w"
         )
-        ttk.Label(faith_frame, text="需要 Z ≥").grid(row=0, column=2, sticky="e")
+        ttk.Label(faith_frame, text="需要 Z ≥").grid(row=1, column=0, pady=(6, 0), sticky="w")
         self.faith_min_z_var = tk.StringVar(value="")
-        ttk.Entry(faith_frame, textvariable=self.faith_min_z_var, width=7).grid(
-            row=0, column=3, padx=6
+        ttk.Entry(faith_frame, textvariable=self.faith_min_z_var, width=8).grid(
+            row=1, column=1, padx=6, pady=(6, 0), sticky="w"
         )
         self.faith_probability_result_var = tk.StringVar(
             value="每个信仰点以 1/3 概率分配给 X、Y、Z"
@@ -384,18 +408,19 @@ class TrackerApp(tk.Tk):
             faith_frame,
             text="计算天晶深渊概率",
             command=self._calculate_faith_damage_probability,
-        ).grid(row=0, column=4, padx=(6, 12), sticky="w")
+        ).grid(row=2, column=0, columnspan=2, pady=(7, 0), sticky="ew")
         ttk.Label(
             faith_frame,
             textvariable=self.faith_probability_result_var,
-        ).grid(row=1, column=0, columnspan=5, sticky="w", pady=(5, 0))
+            wraplength=390,
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
         self._probability_window = window
         self._sync_key_strategy_inputs()
         window.withdraw()
 
     def _open_probability_window(self) -> None:
-        """Show the calculator window from the main toolbar."""
+        """Show the calculator window from the dashboard utility card."""
         self._build_probability_window()
         window = self._probability_window
         if window is None:
@@ -436,7 +461,7 @@ class TrackerApp(tk.Tk):
             self._overlay.destroy()
             self._overlay = None
             self._overlay_canvas = None
-            self.overlay_button.configure(text="打开悬浮记牌器")
+            self.overlay_button.configure(text="悬浮记牌器")
             return
         overlay = tk.Toplevel(self)
         overlay.title("Shadowverse 悬浮记牌器")
@@ -456,7 +481,7 @@ class TrackerApp(tk.Tk):
         canvas.pack(fill="both", expand=True)
         self._overlay = overlay
         self._overlay_canvas = canvas
-        self.overlay_button.configure(text="关闭悬浮记牌器")
+        self.overlay_button.configure(text="悬浮记牌器")
         canvas.bind("<ButtonPress-1>", self._overlay_press)
         canvas.bind("<B1-Motion>", self._overlay_drag)
         canvas.bind("<ButtonRelease-1>", lambda _event: setattr(self, "_overlay_resize_origin", None))
@@ -671,62 +696,67 @@ class TrackerApp(tk.Tk):
         )
 
     @staticmethod
-    def _text_panel(parent: ttk.PanedWindow, title: str, *, wrap: str = "none") -> tk.Text:
-        frame = ttk.LabelFrame(parent, text=title, padding=5)
+    def _text_panel(
+        parent: ttk.PanedWindow,
+        title: str,
+        *,
+        wrap: str = "none",
+        weight: int = 1,
+    ) -> tk.Text:
+        frame = ttk.LabelFrame(parent, text=title, padding=(4, 4))
         text = tk.Text(
             frame,
-            height=16,
-            width=30,
+            height=14,
+            width=24,
             state="disabled",
             wrap=wrap,
-            background="#f6f8fb",
+            background="#fbfcfe",
             foreground="#182635",
             insertbackground="#182635",
-            relief="flat",
-            borderwidth=0,
-            padx=7,
-            pady=7,
-            font=("Segoe UI", 10),
+            relief="solid",
+            borderwidth=1,
+            highlightthickness=0,
+            padx=6,
+            pady=5,
+            font=("Segoe UI", 9),
         )
         text.pack(fill="both", expand=True)
-        parent.add(frame, weight=1)
+        parent.add(frame, weight=weight)
         return text
 
-    def _overview_panel(self, parent: ttk.PanedWindow) -> tk.Text:
-        frame = ttk.LabelFrame(parent, text="对局概览", padding=5)
-        self.summary_var = tk.StringVar(value="等待读取")
+    def _overview_panel(self, parent: ttk.PanedWindow, *, weight: int = 1) -> tk.Text:
+        frame = ttk.LabelFrame(parent, text="对局概览", padding=(6, 5))
+        self.summary_var = tk.StringVar(value="当前卡组胜率\n选择牌组后显示")
         ttk.Label(
             frame,
             textvariable=self.summary_var,
+            style="Summary.TLabel",
             justify="left",
             anchor="w",
-        ).pack(fill="x", anchor="w", pady=(0, 4))
-        self.stats_var = tk.StringVar(value="对局记录未启用")
-        ttk.Label(
-            frame,
-            textvariable=self.stats_var,
-            justify="left",
-            anchor="w",
-        ).pack(fill="x", anchor="w", pady=(0, 4))
+        ).pack(fill="x", anchor="w", pady=(0, 3))
+        # Retain the internal notice for diagnostics and save-error handling,
+        # but do not render a second compact win-rate line in this pane.
+        self.stats_var = tk.StringVar(value="")
         ttk.Separator(frame, orient="horizontal").pack(fill="x", pady=(0, 4))
-        ttk.Label(frame, text="我的手牌").pack(anchor="w")
+        ttk.Label(frame, text="我的手牌", style="PaneHeading.TLabel").pack(anchor="w", pady=(0, 3))
         text = tk.Text(
             frame,
-            height=16,
-            width=30,
+            height=14,
+            width=24,
             state="disabled",
             wrap="none",
-            background="#f6f8fb",
+            background="#fbfcfe",
             foreground="#182635",
             insertbackground="#182635",
-            relief="flat",
-            borderwidth=0,
-            padx=7,
-            pady=7,
-            font=("Segoe UI", 10),
+            relief="solid",
+            borderwidth=1,
+            highlightthickness=0,
+            padx=6,
+            pady=5,
+            font=("Segoe UI", 9),
         )
         text.pack(fill="both", expand=True)
-        parent.add(frame, weight=1)
+        parent.add(frame, weight=weight)
         return text
 
     def _connect(self) -> None:
@@ -745,6 +775,7 @@ class TrackerApp(tk.Tk):
             TrackerConfig(
                 model_address=model,
                 pid=self._startup_pid,
+                client_mode=self._connection_mode_key(),
                 # Opening mulligan responses can be replaced in quick
                 # succession. Poll at 20 Hz so the opponent response is seen
                 # before the local response overwrites it.
@@ -776,6 +807,65 @@ class TrackerApp(tk.Tk):
         self._service.start()
         self.connect_button.configure(text="停止读取")
         self.status_var.set("正在后台读取（不会暂停游戏）")
+
+    def _connection_mode_key(self) -> str:
+        """Translate the visible client selector to the service setting."""
+        value = self.connection_mode_var.get().strip()
+        return {"Steam": "steam", "国服": "cn"}.get(value, "auto")
+
+    def _change_connection_mode(self, _event: object = None) -> None:
+        """Apply a newly selected client without requiring an app restart."""
+        if self._service is None or not self._service.running:
+            self.status_var.set(f"已选择{self.connection_mode_var.get()} · 等待客户端启动")
+            return
+        self._service.stop()
+        self._service = None
+        self.status_var.set(f"正在切换到{self.connection_mode_var.get()}连接…")
+        self._connect()
+
+    def _sync_status_indicator(self, *_args: object) -> None:
+        """Keep the connection dot readable without exposing raw exceptions."""
+        indicator = getattr(self, "status_dot", None)
+        if indicator is None:
+            return
+        message = str(self.status_var.get()).casefold()
+        if any(token in message for token in ("已连接", "已开启")):
+            style = "StatusDot.Ok.TLabel"
+        elif any(token in message for token in ("错误", "失败", "不支持", "拒绝", "无法")):
+            style = "StatusDot.Error.TLabel"
+        elif any(token in message for token in ("已停止", "等待", "未连接")):
+            style = "StatusDot.Idle.TLabel"
+        else:
+            style = "StatusDot.TLabel"
+        try:
+            indicator.configure(style=style)
+        except tk.TclError:
+            # The callback can run while a test fixture is constructing a
+            # partial UI; status text should still remain usable there.
+            pass
+
+    @staticmethod
+    def _compact_status_message(value: object) -> str:
+        """Turn verbose reader exceptions into one actionable dashboard line."""
+        raw = str(value or "").strip()
+        lowered = raw.casefold()
+        if "等待游戏启动或重新连接" in raw:
+            return "等待游戏启动或重新连接 · 自动重试"
+        if "已连接国服进程" in raw:
+            return "已连接国服 · 正在读取"
+        if "已连接steam进程" in lowered:
+            return "已连接 Steam · 正在读取"
+        if "process not found" in lowered:
+            return "未检测到游戏客户端，启动后会自动重试"
+        if "access is denied" in lowered or "拒绝访问" in raw:
+            return "无法读取游戏进程，请以管理员身份运行"
+        if "gameassembly" in lowered and ("unsupported" in lowered or "不支持" in raw):
+            return "当前 GameAssembly 不受支持，请更新适配"
+        if "gameassembly" in lowered:
+            return "未找到兼容的 GameAssembly，正在重试"
+        if len(raw) > 86:
+            return "读取出现异常，正在自动重试"
+        return raw or "读取出现异常，正在自动重试"
 
     def _refresh_probability_choices(self, ledger: dict[str, object]) -> None:
         rows = ledger.get("rows", ())
@@ -944,9 +1034,9 @@ class TrackerApp(tk.Tk):
 
     def _toggle_match_recording(self) -> None:
         if self.record_matches_var.get():
-            self.status_var.set("已开启胜负统计（仅保存到本机）；训练记录始终自动保存")
+            self.status_var.set("已开启本地胜负统计 · 训练记录始终自动保存")
         else:
-            self.status_var.set("已关闭胜负统计；训练记录仍会自动保存")
+            self.status_var.set("已关闭本地胜负统计 · 训练记录仍自动保存")
         self._update_stats_summary()
 
     def _drain_events(self) -> None:
@@ -958,13 +1048,13 @@ class TrackerApp(tk.Tk):
             except queue.Empty:
                 break
             if kind == "error":
-                message = f"读取错误：{value}"
+                message = self._compact_status_message(value)
                 self.status_var.set(message)
                 if latest_snapshot is not None:
                     status_after_snapshot = message
                 continue
             if kind == "status":
-                message = str(value)
+                message = self._compact_status_message(value)
                 self.status_var.set(message)
                 if latest_snapshot is not None:
                     status_after_snapshot = message
@@ -1025,9 +1115,9 @@ class TrackerApp(tk.Tk):
             return
         self._opponent_known_hand.update(snapshot, opponent)
         self.summary_var.set(
-            f"回合 {mine.get('turn', '?')}    "
-            f"我方生命 {mine.get('life', '?')} / 对手 {opponent.get('life', '?')}    "
-            f"我方牌库 {mine.get('deck_count', '?')}    "
+            f"T{mine.get('turn', '?')}  ·  我方 {mine.get('life', '?')} / "
+            f"对手 {opponent.get('life', '?')}\n"
+            f"牌库 {mine.get('deck_count', '?')}  ·  "
             f"PP {mine.get('pp', '?')}/{mine.get('max_pp', '?')}"
         )
         hand = mine.get("hand", [])
@@ -1387,18 +1477,18 @@ class TrackerApp(tk.Tk):
         """Immediately remove finished-match data while keeping saved results."""
         self._last_snapshot = None
         self._opponent_known_hand.reset()
-        self.status_var.set("本局已结束，等待下一局")
-        self.summary_var.set("本局已结束，等待下一局数据")
-        self.opponent_counter_var.set("通用计数器：等待下一局")
-        self.class_counter_var.set("对手职业计数器：等待下一局")
+        self.status_var.set("本局已结束 · 等待下一局")
+        self._update_stats_summary()
+        self.opponent_counter_var.set("等待下一局")
+        self.class_counter_var.set("等待下一局")
         self.key_deck_remaining_var.set("—")
         self.key_hand_size_var.set("—")
         self.key_mulligan_var.set("—")
         self.key_probability_result_var.set("等待下一局对手数据")
-        self._set_text(self.hand_text, "等待下一局")
+        self._set_text(self.hand_text, "暂无手牌数据\n\n开始对局后显示我方手牌")
         self._render_active_deck_full()
-        self._set_text(self.field_text, "等待下一局")
-        self._set_text(self.history_text, "等待下一局")
+        self._set_text(self.field_text, "暂无场面数据\n\n开始对局后显示双方场面")
+        self._set_text(self.history_text, "暂无本局记录\n\n开始对局后记录操作")
         self._render_overlay(None)
 
     def _track_match(
@@ -1498,31 +1588,48 @@ class TrackerApp(tk.Tk):
     def _stats_summary_for_key(self, deck_key: str) -> str:
         stats = self._match_history.stats(deck_key)
         return (
-            f"当前卡组：{stats['wins']} 胜 / {stats['losses']} 负，"
-            f"胜率 {float(stats['win_rate']):.1f}%（共 {stats['total']} 局）"
+            f"胜率 {float(stats['win_rate']):.1f}% · "
+            f"{stats['wins']}胜/{stats['losses']}负 · {stats['total']}局"
+        )
+
+    def _deck_overview_text(self) -> str:
+        """Return a compact win-rate card for the overview pane."""
+        active = self._active_saved_deck()
+        if active is None:
+            return "当前卡组胜率\n未选择牌组 · 0局"
+        stats = self._match_history.stats(active.key)
+        first = stats["first"]
+        second = stats["second"]
+        return (
+            f"当前卡组：{active.name}\n"
+            f"总胜率 {float(stats['win_rate']):.1f}% · {int(stats['finished'])}局\n"
+            f"先手 {float(first['win_rate']):.1f}% · {int(first['finished'])}局  "
+            f"后手 {float(second['win_rate']):.1f}% · {int(second['finished'])}局"
         )
 
     def _update_stats_summary(self) -> None:
+        if hasattr(self, "summary_var"):
+            self.summary_var.set(self._deck_overview_text())
         if not self.record_matches_var.get():
-            self.stats_var.set("胜负统计未启用（训练记录仍自动保存）")
+            self.stats_var.set("本地统计未启用 · 训练记录仍自动保存")
             return
         if self._match_history_error:
             self.stats_var.set(f"对局记录保存失败：{self._match_history_error}")
             return
         active = self._active_saved_deck()
         if active is None:
-            self.stats_var.set("对局记录已启用；请选择本地牌组")
+            self.stats_var.set("本地统计已启用 · 请选择牌组")
             return
         self.stats_var.set(self._stats_summary_for_key(active.key))
 
     def _show_match_stats(self) -> None:
         active = self._active_saved_deck()
         if active is None:
-            messagebox.showinfo("对局统计", "请先从本地牌组仓库选择牌组。", parent=self)
+            messagebox.showinfo("详细统计", "请先从本地牌组仓库选择牌组。", parent=self)
             return
         stats = self._match_history.stats(active.key)
         window = tk.Toplevel(self)
-        window.title(f"对局统计 - {active.name}")
+        window.title(f"详细统计 - {active.name}")
         window.geometry("620x420")
         buttons = ttk.Frame(window, padding=(12, 0, 12, 10))
         buttons.pack(fill="x", side="bottom")
@@ -1574,7 +1681,7 @@ class TrackerApp(tk.Tk):
             return
         self._update_stats_summary()
         window.destroy()
-        messagebox.showinfo("对局统计", f"已清除 {removed} 局对局记录。", parent=self)
+        messagebox.showinfo("详细统计", f"已清除 {removed} 局对局记录。", parent=self)
 
     def _edit_current_deck(self) -> None:
         deck = self._active_saved_deck()
@@ -1732,7 +1839,7 @@ class TrackerApp(tk.Tk):
             self._match_id = None
             self._match_deck_key = None
             self._refresh_deck_choices()
-            self.deck_status_var.set(f"已保存修改：{updated.name}（仍为同一统计卡组）")
+            self.deck_status_var.set(f"已保存修改：{updated.name} · 胜负统计仍绑定此牌组")
             if self._service and self._service.running:
                 self._service.set_selected_deck(updated.to_snapshot(), updated.key)
             self._update_stats_summary()
@@ -1786,8 +1893,11 @@ class TrackerApp(tk.Tk):
         return deck.to_snapshot() if deck else None
 
     def _refresh_deck_choices(self) -> None:
-        self._deck_choice_keys = [deck.key for deck in self._repository.decks]
-        labels = [
+        # Keep an empty item at the top so a user can explicitly detach the
+        # active deck from the next match.  The blank item replaces the old
+        # standalone "清空" action in the compact control row.
+        self._deck_choice_keys = [None, *[deck.key for deck in self._repository.decks]]
+        labels = [""] + [
             f"{deck.name}（{class_name(deck.class_id)} / {self._format_mode(deck.format_version)} / "
             f"{len(deck.cards)} 种 / {deck.total_cards} 张）"
             for deck in self._repository.decks
@@ -1798,13 +1908,13 @@ class TrackerApp(tk.Tk):
             index = self._deck_choice_keys.index(active.key)
             self.deck_choice.current(index)
             self.deck_status_var.set(
-                f"已选择：{active.name}（{class_name(active.class_id)} / "
-                f"{self._format_mode(active.format_version)}）；仓库位置：{self._repository.path}"
+                f"已选择：{active.name} · {class_name(active.class_id)} / "
+                f"{self._format_mode(active.format_version)} · 对局将绑定此牌组"
             )
             self._render_deck_info(active.to_snapshot().to_dict())
         else:
-            self.deck_choice.set("")
-            message = "尚未导入牌组，请粘贴官方牌组详情链接"
+            self.deck_choice.current(0)
+            message = "未选择牌组 · 可粘贴官方链接或四位牌组码导入"
             if self._repository_error:
                 message = f"牌组仓库读取失败：{self._repository_error}"
             self.deck_status_var.set(message)
@@ -1815,14 +1925,17 @@ class TrackerApp(tk.Tk):
         index = self.deck_choice.current()
         if not 0 <= index < len(self._deck_choice_keys):
             return
+        if self._deck_choice_keys[index] is None:
+            self._clear_deck_selection()
+            return
         try:
             deck = self._repository.select(self._deck_choice_keys[index])
         except (OSError, KeyError, ValueError) as exc:
             messagebox.showerror("切换失败", str(exc), parent=self)
             return
         self.deck_status_var.set(
-            f"已选择：{deck.name}（{class_name(deck.class_id)} / "
-            f"{self._format_mode(deck.format_version)}）；后续账本使用此牌组"
+            f"已选择：{deck.name} · {class_name(deck.class_id)} / "
+            f"{self._format_mode(deck.format_version)} · 对局将绑定此牌组"
         )
         self._match_id = None
         self._match_deck_key = None
@@ -1841,7 +1954,7 @@ class TrackerApp(tk.Tk):
         self._match_id = None
         self._match_deck_key = None
         self._refresh_deck_choices()
-        self.deck_status_var.set("已清空当前牌组；特殊/解密对局将不使用本地牌库")
+        self.deck_status_var.set("已清空牌组选择 · 特殊/解密对局不使用本地牌库")
         if self._service and self._service.running:
             self._service.set_selected_deck(None, None)
         self._update_stats_summary()
@@ -1871,22 +1984,11 @@ class TrackerApp(tk.Tk):
         return import_deck_code(value) if len(value) == 4 and "." not in value else parse_official_deck(value)
 
     def _save_imported_deck(self, parsed: OfficialDeck) -> None:
-        selected_class = next(
-            (class_id for class_id, label in CLASS_NAMES.items() if label == self.import_class_var.get()),
-            parsed.class_id,
-        )
-        selected_format = 1 if self.import_mode_var.get() == "轮换" else 2
-        # The visible registration fields are authoritative.  This lets a
-        # user correct an outdated class/format in a copied link while keeping
-        # the original URL as the source for traceability.
-        parsed = OfficialDeck(
-            format_version=selected_format,
-            class_id=selected_class,
-            cards=parsed.cards,
-            source=parsed.source,
-        )
         preview_names = [get_card_name(card.card_id) for card in parsed.cards[:2]]
         default_name = " / ".join(preview_names) + " 牌组"
+        self.deck_status_var.set(
+            f"已识别：{class_name(parsed.class_id)} / {self._format_mode(parsed.format_version)} · 请确认名称"
+        )
         name = simpledialog.askstring(
             "保存牌组",
             "请输入本地牌组名称：",
@@ -1904,8 +2006,8 @@ class TrackerApp(tk.Tk):
         self._repository_error = ""
         self._refresh_deck_choices()
         self.deck_status_var.set(
-            f"已导入并选择：{saved.name}（{class_name(saved.class_id)} / "
-            f"{self._format_mode(saved.format_version)} / 40 张）"
+            f"已导入并选择：{saved.name} · {class_name(saved.class_id)} / "
+            f"{self._format_mode(saved.format_version)} · 40 张"
         )
         self._match_id = None
         self._match_deck_key = None

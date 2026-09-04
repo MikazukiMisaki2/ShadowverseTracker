@@ -10,9 +10,17 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from shadowverse_tracker.memory.win32 import ProcessInfo, find_process_candidates
+from shadowverse_tracker.tracker_service import TrackerConfig
 
 
 class ProcessSelectionTests(unittest.TestCase):
+    def test_client_mode_can_limit_discovery_to_one_build(self) -> None:
+        self.assertEqual(TrackerConfig(client_mode="steam").process_candidates, ("ShadowverseWB.exe",))
+        self.assertEqual(
+            TrackerConfig(client_mode="cn").process_candidates,
+            ("MuMu模拟器x影之诗高清版.exe", "MuMu模拟器x影之诗高清版.o"),
+        )
+
     @patch(
         "shadowverse_tracker.memory.win32.iter_processes",
         return_value=(

@@ -81,6 +81,12 @@ class AppFormattingTests(unittest.TestCase):
         self.assertEqual(TrackerApp._project_opponent_next_draw(29, 6), (28, 7))
         self.assertIsNone(TrackerApp._project_opponent_next_draw(0, 6))
 
+    def test_connection_status_hides_verbose_process_names(self) -> None:
+        value = TrackerApp._compact_status_message(
+            "等待游戏启动或重新连接：process not found: ShadowverseWB.exe, MuMu模拟器x影之诗高清版.exe"
+        )
+        self.assertEqual(value, "等待游戏启动或重新连接 · 自动重试")
+
     def test_lethal_panel_shows_max_damage_resources_and_targets(self) -> None:
         app = object.__new__(TrackerApp)
         app.lethal_text = self._TextBuffer()

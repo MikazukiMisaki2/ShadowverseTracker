@@ -59,14 +59,25 @@ class TrackerConfig:
     training_upload_url: str | None = None
     training_upload_enabled: bool = False
     training_upload_token: str | None = None
+    # ``auto`` keeps the historical behaviour.  The UI can constrain
+    # discovery to one client when both Steam and the China emulator are
+    # installed at the same time.
+    client_mode: str = "auto"
 
     @property
     def process_candidates(self) -> tuple[str, ...]:
         """Names tried by automatic process discovery, in preference order."""
+        mode = str(self.client_mode or "auto").strip().casefold()
+        if mode in {"steam", "global"}:
+            names = (self.process_name,)
+        elif mode in {"cn", "china", "国服"}:
+            names = self.process_aliases
+        else:
+            names = (self.process_name, *self.process_aliases)
         return tuple(
             dict.fromkeys(
                 name.strip()
-                for name in (self.process_name, *self.process_aliases)
+                for name in names
                 if name and name.strip()
             )
         )
