@@ -93,6 +93,17 @@ class MatchHistoryTests(unittest.TestCase):
             self.assertEqual(history.stats("deck-a")["total"], 0)
             self.assertEqual(history.stats("deck-b")["total"], 1)
 
+    def test_overall_stats_and_opponent_deck_label(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            history = MatchHistory(Path(directory) / "matches.json")
+            history.add(record("m1", 1, "胜利", is_first=True))
+            second = MatchRecord(**{**record("m2", 2, "失败", is_first=False).__dict__, "deck_key": "deck-b"})
+            history.add(second)
+            self.assertEqual(history.stats()["total"], 2)
+            self.assertTrue(history.update_opponent_deck("m2", "快攻龙"))
+            restored = MatchHistory(history.path).load()
+            self.assertEqual(restored.records[-1].opponent_deck_name, "快攻龙")
+
     def test_terminal_id_is_stable(self) -> None:
         first = terminal_match_id("0xabc", 101, 11, 3, -2, 22, 4, 10, 8)
         second = terminal_match_id("0xabc", 101, 11, 3, -2, 22, 4, 10, 8)

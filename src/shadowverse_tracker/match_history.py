@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # The order used by the official deck format.  Keep the numeric ID in records
 # as well, so an updated translation can be applied without losing history.
@@ -93,6 +93,7 @@ class MatchRecord:
     result_code: int
     turn: int | None
     is_first: bool | None = None
+    opponent_deck_name: str = ""
 
 
 class MatchHistory:
@@ -104,7 +105,7 @@ class MatchHistory:
         if not self.path.exists():
             return self
         value = json.loads(self.path.read_text(encoding="utf-8"))
-        if not isinstance(value, dict) or int(value.get("schema_version", 0)) not in (1, 2, SCHEMA_VERSION):
+        if not isinstance(value, dict) or int(value.get("schema_version", 0)) not in (1, 2, 3, SCHEMA_VERSION):
             raise ValueError("不支持的对局记录格式")
         migrated = int(value.get("schema_version", 0)) != SCHEMA_VERSION
         records = value.get("records", ())
@@ -132,6 +133,11 @@ class MatchHistory:
                     result_code=result_code,
                     turn=int(item["turn"]) if item.get("turn") is not None else None,
                     is_first=bool(item["is_first"]) if item.get("is_first") is not None else None,
+                    opponent_deck_name=str(
+                        item.get("opponent_deck_name")
+                        or item.get("opponent_deck")
+                        or ""
+                    ).strip(),
                 ))
             except (KeyError, TypeError, ValueError):
                 continue
@@ -156,6 +162,19 @@ class MatchHistory:
         self.save()
         return True
 
+    def update_opponent_deck(self, match_id: str, name: str) -> bool:
+        """Persist the user-entered opponent deck label for one match."""
+        clean_name = str(name or "").strip()
+        for index, record in enumerate(self.records):
+            if record.match_id != match_id:
+                continue
+            if record.opponent_deck_name == clean_name:
+                return False
+            self.records[index] = replace(record, opponent_deck_name=clean_name)
+            self.save()
+            return True
+        return False
+
     def clear_deck(self, deck_key: str) -> int:
         """Delete all locally saved match records for one deck."""
         before = len(self.records)
@@ -168,11 +187,15 @@ class MatchHistory:
     def for_deck(self, deck_key: str) -> list[MatchRecord]:
         return [record for record in self.records if record.deck_key == deck_key]
 
-    def stats(self, deck_key: str) -> dict[str, object]:
+    def stats(self, deck_key: str | None = None) -> dict[str, object]:
         # A record labelled ``结束`` is retained for diagnostics but is not a
         # completed result. In normal operation 105/106 are migrated above,
         # so all displayed games have a win or loss.
-        records = [record for record in self.for_deck(deck_key) if record.result in {"胜利", "失败"}]
+        records = [
+            record for record in self.records
+            if (deck_key is None or record.deck_key == deck_key)
+            and record.result in {"胜利", "失败"}
+        ]
         grouped: dict[str, dict[str, int | float | dict[str, int | float]]] = {}
         for record in records:
             group = grouped.setdefault(record.opponent_class, {

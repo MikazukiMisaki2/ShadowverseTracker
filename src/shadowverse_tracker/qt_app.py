@@ -18,6 +18,7 @@ import sys
 from PySide6.QtCore import Qt, QTimer, Signal, QSize
 from PySide6.QtGui import QColor, QFont, QIcon, QPixmap
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QAbstractItemView,
     QApplication,
     QDialog,
@@ -150,6 +151,12 @@ QLabel#sectionTitle {
     font-size: 13px;
     font-weight: 700;
 }
+QLabel#deckClassIcon {
+    background: #ffffff;
+    border: 1px solid #dbe4ee;
+    border-radius: 6px;
+    padding: 2px;
+}
 QLabel#muted {
     color: #74879a;
     font-size: 11px;
@@ -262,6 +269,16 @@ def _read_card_id(card: object) -> int | None:
         return None
     value = card.get("base_card_id") or card.get("card_id")
     return value if isinstance(value, int) and value > 0 else None
+
+
+def _plain_spinbox(minimum: int, maximum: int, value: int | None = None) -> QSpinBox:
+    """Create a numeric input without the distracting inline arrow buttons."""
+    spin = QSpinBox()
+    spin.setRange(minimum, maximum)
+    spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+    if value is not None:
+        spin.setValue(value)
+    return spin
 
 
 class QtCardPanel(QFrame):
@@ -439,9 +456,7 @@ class DeckEditorDialog(QDialog):
             cost = str(metadata.cost) if metadata else "?"
             self.table.setItem(row, 0, QTableWidgetItem(cost))
             self.table.setItem(row, 1, QTableWidgetItem(window._card_name(card.card_id)))
-            spin = QSpinBox()
-            spin.setRange(0, 3)
-            spin.setValue(card.count)
+            spin = _plain_spinbox(0, 3, card.count)
             self.table.setCellWidget(row, 2, spin)
             self.table.setItem(row, 3, QTableWidgetItem(str(card.card_id)))
         layout.addWidget(self.table, 1)
@@ -628,6 +643,12 @@ class QtTrackerWindow(FluentWindow):
         self.deck_choice.setMinimumWidth(330)
         self.deck_choice.currentIndexChanged.connect(self._select_deck_index)
         controls.addWidget(QLabel("当前牌组"))
+        self.deck_choice_icon = QLabel()
+        self.deck_choice_icon.setObjectName("deckClassIcon")
+        self.deck_choice_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.deck_choice_icon.setFixedSize(28, 28)
+        self.deck_choice_icon.setVisible(False)
+        controls.addWidget(self.deck_choice_icon)
         controls.addWidget(self.deck_choice, 1)
         self.connection_mode = ComboBox()
         self.connection_mode.addItems(("自动", "Steam", "国服"))
@@ -763,9 +784,7 @@ class QtTrackerWindow(FluentWindow):
         self.probability_card = ComboBox()
         self.probability_card.setMinimumWidth(270)
         self._probability_cards: list[tuple[int, int, int]] = []
-        self.probability_draws = QSpinBox()
-        self.probability_draws.setRange(1, 40)
-        self.probability_draws.setValue(1)
+        self.probability_draws = _plain_spinbox(1, 40, 1)
         self.probability_result = QLabel("选择牌库中的卡牌后计算")
         self.probability_result.setObjectName("muted")
         draw_form.addRow("目标卡牌", self.probability_card)
@@ -783,12 +802,12 @@ class QtTrackerWindow(FluentWindow):
         self.key_strategy = ComboBox()
         self.key_strategy.addItem("Unknown 未知", "unknown")
         self.key_strategy.addItem("Known 已知", "known")
-        self.key_deck_remaining = QSpinBox(); self.key_deck_remaining.setRange(0, 40); self.key_deck_remaining.setValue(36)
-        self.key_hand_size = QSpinBox(); self.key_hand_size.setRange(0, 10); self.key_hand_size.setValue(4)
-        self.key_mulligan = QSpinBox(); self.key_mulligan.setRange(0, 4); self.key_mulligan.setValue(0)
-        self.key_copies = QSpinBox(); self.key_copies.setRange(0, 40); self.key_copies.setValue(3)
-        self.key_limit = QSpinBox(); self.key_limit.setRange(0, 4); self.key_limit.setValue(1)
-        self.key_seen = QSpinBox(); self.key_seen.setRange(0, 40); self.key_seen.setValue(0)
+        self.key_deck_remaining = _plain_spinbox(0, 40, 36)
+        self.key_hand_size = _plain_spinbox(0, 10, 4)
+        self.key_mulligan = _plain_spinbox(0, 4, 0)
+        self.key_copies = _plain_spinbox(0, 40, 3)
+        self.key_limit = _plain_spinbox(0, 4, 1)
+        self.key_seen = _plain_spinbox(0, 40, 0)
         key_form.addRow("策略", self.key_strategy)
         key_form.addRow("对手牌库", self.key_deck_remaining)
         key_form.addRow("未知手牌", self.key_hand_size)
@@ -811,8 +830,8 @@ class QtTrackerWindow(FluentWindow):
 
         faith = self._calculator_card("天晶深渊伤害概率")
         faith_form = QFormLayout()
-        self.faith_total = QSpinBox(); self.faith_total.setRange(0, 1000)
-        self.faith_min_z = QSpinBox(); self.faith_min_z.setRange(0, 1000)
+        self.faith_total = _plain_spinbox(0, 1000)
+        self.faith_min_z = _plain_spinbox(0, 1000)
         faith_form.addRow("信仰总值 X+Y+Z", self.faith_total)
         faith_form.addRow("需要 Z ≥", self.faith_min_z)
         faith.layout().addLayout(faith_form)
@@ -845,11 +864,13 @@ class QtTrackerWindow(FluentWindow):
         layout = self._page_layout(page)
         title_row = QHBoxLayout()
         title_row.addWidget(SubtitleLabel("详细统计"))
+        title_row.addWidget(QLabel("筛选牌组"))
+        self.stats_deck_filter = ComboBox()
+        self.stats_deck_filter.setMinimumWidth(260)
+        self.stats_deck_filter.currentIndexChanged.connect(lambda _index: self._refresh_stats_page())
+        title_row.addWidget(self.stats_deck_filter)
         title_row.addStretch(1)
-        self.stats_deck_label = QLabel("当前牌组")
-        self.stats_deck_label.setObjectName("muted")
-        title_row.addWidget(self.stats_deck_label)
-        self.stats_reset_button = PushButton("重置当前牌组胜率")
+        self.stats_reset_button = PushButton("重置筛选牌组")
         self.stats_reset_button.setIcon(FluentIcon.DELETE.icon())
         self.stats_reset_button.clicked.connect(self._reset_stats)
         title_row.addWidget(self.stats_reset_button)
@@ -871,14 +892,52 @@ class QtTrackerWindow(FluentWindow):
         self.stats_summary = QLabel("未选择牌组")
         self.stats_summary.setObjectName("sectionTitle")
         layout.addWidget(self.stats_summary)
+
+        breakdown_title = QHBoxLayout()
+        breakdown_title.addWidget(QLabel("职业 / 先后手胜率"))
+        breakdown_title.addStretch(1)
+        breakdown_hint = QLabel("按筛选范围汇总")
+        breakdown_hint.setObjectName("muted")
+        breakdown_title.addWidget(breakdown_hint)
+        layout.addLayout(breakdown_title)
+        self.stats_breakdown = QTableWidget(0, 5)
+        self.stats_breakdown.setObjectName("matchTable")
+        self.stats_breakdown.setAlternatingRowColors(True)
+        self.stats_breakdown.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.stats_breakdown.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.stats_breakdown.verticalHeader().setVisible(False)
+        self.stats_breakdown.setHorizontalHeaderLabels(("对手职业", "对局", "胜率", "先手", "后手"))
+        self.stats_breakdown.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for column in range(1, 5):
+            self.stats_breakdown.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        self.stats_breakdown.setMinimumHeight(135)
+        self.stats_breakdown.setMaximumHeight(190)
+        layout.addWidget(self.stats_breakdown)
+
+        match_title = QHBoxLayout()
+        match_title.addWidget(QLabel("详细对局"))
+        match_title.addStretch(1)
+        match_hint = QLabel("对手卡组列可双击输入")
+        match_hint.setObjectName("muted")
+        match_title.addWidget(match_hint)
+        layout.addLayout(match_title)
         self.match_table = QTableWidget(0, 7)
         self.match_table.setObjectName("matchTable")
         self.match_table.setAlternatingRowColors(True)
-        self.match_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.match_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed
+        )
         self.match_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.match_table.setHorizontalHeaderLabels(("时间", "结果", "对手职业", "先后手", "回合", "结果码", "牌组"))
+        self.match_table.setHorizontalHeaderLabels(("我的牌组", "对手职业", "对手卡组", "先后手", "回合数", "时间", "结果"))
         self.match_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self.match_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+        self.match_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.match_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.match_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.match_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.match_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        self.match_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+        self.match_table.itemChanged.connect(self._on_match_table_item_changed)
         layout.addWidget(self.match_table, 1)
         return page
 
@@ -1049,6 +1108,7 @@ class QtTrackerWindow(FluentWindow):
     def _refresh_deck_choices(self) -> None:
         self._deck_choice_keys = [None, *[deck.key for deck in self._repository.decks]]
         labels = [""] + [self._deck_label(deck) for deck in self._repository.decks]
+        active = self._active_deck()
         for combo in (getattr(self, "deck_choice", None),):
             if combo is None:
                 continue
@@ -1058,9 +1118,12 @@ class QtTrackerWindow(FluentWindow):
                 icon = self._class_icon(deck.class_id)
                 if not icon.isNull():
                     combo.setItemIcon(index, icon)
-            active = self._active_deck()
             combo.setCurrentIndex(self._deck_choice_keys.index(active.key) if active else 0)
             combo.blockSignals(False)
+        if hasattr(self, "deck_choice_icon"):
+            icon = self._class_icon(active.class_id) if active is not None else QIcon()
+            self.deck_choice_icon.setPixmap(icon.pixmap(QSize(22, 22)) if not icon.isNull() else QPixmap())
+            self.deck_choice_icon.setVisible(not icon.isNull())
         if hasattr(self, "deck_list"):
             self.deck_list.blockSignals(True)
             self.deck_list.clear()
@@ -1074,11 +1137,12 @@ class QtTrackerWindow(FluentWindow):
                 if not icon.isNull():
                     item.setIcon(icon)
                 self.deck_list.addItem(item)
-            active = self._active_deck()
             self.deck_list.setCurrentRow(self._deck_choice_keys.index(active.key) if active else 0)
             self.deck_list.blockSignals(False)
+        self._refresh_stats_filter()
         self._render_deck_detail()
         self._update_header_stats()
+        self._refresh_stats_page()
 
     def _select_deck_index(self, index: int) -> None:
         if not 0 <= index < len(self._deck_choice_keys):
@@ -1483,23 +1547,43 @@ class QtTrackerWindow(FluentWindow):
         self.probability_card.addItems([self._card_name(item[0]) for item in choices])
         self.probability_card.blockSignals(False)
 
+    def _refresh_stats_filter(self) -> None:
+        combo = getattr(self, "stats_deck_filter", None)
+        if combo is None:
+            return
+        previous = combo.currentData()
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("全部卡组", None)
+        for deck in self._repository.decks:
+            combo.addItem(self._deck_label(deck), deck.key)
+            icon = self._class_icon(deck.class_id)
+            if not icon.isNull():
+                combo.setItemIcon(combo.count() - 1, icon)
+        target = combo.findData(previous) if previous is not None else 0
+        combo.setCurrentIndex(target if target >= 0 else 0)
+        combo.blockSignals(False)
+
+    def _stats_filter_key(self) -> str | None:
+        combo = getattr(self, "stats_deck_filter", None)
+        if combo is None:
+            return None
+        value = combo.currentData()
+        return value if isinstance(value, str) and value else None
+
     def _refresh_stats_page(self) -> None:
         if not hasattr(self, "match_table"): return
-        active = self._active_deck()
-        self.stats_deck_label.setText(active.name if active else "未选择牌组")
-        self.match_table.setRowCount(0)
-        if active is None:
-            self.stats_rate_metric.set_value("—", "未选择牌组")
-            self.stats_games_metric.set_value("—", "胜 / 负")
-            self.stats_first_metric.set_value("—", "0 局")
-            self.stats_second_metric.set_value("—", "0 局")
-            self.stats_summary.setText("未选择牌组")
-            return
-        stats = self._history.stats(active.key)
+        filter_key = self._stats_filter_key()
+        stats = self._history.stats(filter_key)
+        scope_label = "全部卡组" if filter_key is None else next(
+            (deck.name for deck in self._repository.decks if deck.key == filter_key),
+            "已选牌组",
+        )
+        self.stats_reset_button.setEnabled(filter_key is not None)
         first = stats["first"]
         second = stats["second"]
         self.stats_rate_metric.set_value(
-            f"{float(stats['win_rate']):.1f}%", f"{int(stats['finished'])} 局"
+            f"{float(stats['win_rate']):.1f}%", f"{int(stats['finished'])} 局 · {scope_label}"
         )
         self.stats_games_metric.set_value(
             f"{int(stats['finished'])}", f"{int(stats['wins'])} 胜 / {int(stats['losses'])} 负"
@@ -1511,25 +1595,103 @@ class QtTrackerWindow(FluentWindow):
             f"{float(second['win_rate']):.1f}%", f"{int(second['finished'])} 局"
         )
         self.stats_summary.setText(
-            f"总计 {stats['finished']} 局 · {stats['wins']} 胜 / {stats['losses']} 负 · 胜率 {float(stats['win_rate']):.1f}%   "
+            f"{scope_label} · 总计 {stats['finished']} 局 · {stats['wins']} 胜 / {stats['losses']} 负 · 胜率 {float(stats['win_rate']):.1f}%   "
             f"先手 {float(first['win_rate']):.1f}%   后手 {float(second['win_rate']):.1f}%"
         )
-        records = self._history.for_deck(active.key)
+
+        self.stats_breakdown.setRowCount(0)
+        by_class = stats.get("by_class", {})
+        if isinstance(by_class, dict):
+            for opponent_class, group in sorted(by_class.items(), key=lambda item: str(item[0])):
+                if not isinstance(group, dict):
+                    continue
+                row = self.stats_breakdown.rowCount()
+                self.stats_breakdown.insertRow(row)
+                class_id = next(
+                    (
+                        record.opponent_class_id
+                        for record in self._history.records
+                        if record.opponent_class == opponent_class
+                        and (filter_key is None or record.deck_key == filter_key)
+                    ),
+                    None,
+                )
+                class_item = QTableWidgetItem(str(opponent_class))
+                icon = self._class_icon(class_id)
+                if not icon.isNull():
+                    class_item.setIcon(icon)
+                self.stats_breakdown.setItem(row, 0, class_item)
+                self.stats_breakdown.setItem(row, 1, QTableWidgetItem(str(group.get("finished", 0))))
+                self.stats_breakdown.setItem(row, 2, QTableWidgetItem(f"{float(group.get('win_rate', 0.0)):.1f}%"))
+                first_group = group.get("first", {})
+                second_group = group.get("second", {})
+                self.stats_breakdown.setItem(row, 3, QTableWidgetItem(
+                    f"{float(first_group.get('win_rate', 0.0)):.1f}% · {int(first_group.get('finished', 0))}局"
+                ))
+                self.stats_breakdown.setItem(row, 4, QTableWidgetItem(
+                    f"{float(second_group.get('win_rate', 0.0)):.1f}% · {int(second_group.get('finished', 0))}局"
+                ))
+
+        records = [
+            record for record in self._history.records
+            if (filter_key is None or record.deck_key == filter_key)
+            and record.result in {"胜利", "失败"}
+        ]
+        self.match_table.blockSignals(True)
+        self.match_table.setRowCount(0)
         for record in reversed(records):
             row = self.match_table.rowCount(); self.match_table.insertRow(row)
             values = (
-                record.timestamp.replace("T", " ")[:16], record.result, record.opponent_class,
+                record.deck_name,
+                record.opponent_class,
+                record.opponent_deck_name or "（双击输入）",
                 "先手" if record.is_first is True else "后手" if record.is_first is False else "未知",
-                str(record.turn or "—"), str(record.result_code), record.deck_name,
+                str(record.turn or "—"),
+                record.timestamp.replace("T", " ")[:16],
+                record.result,
             )
-            for col, value in enumerate(values): self.match_table.setItem(row, col, QTableWidgetItem(value))
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setFlags(
+                    item.flags() | Qt.ItemFlag.ItemIsEditable
+                    if column == 2
+                    else item.flags() & ~Qt.ItemFlag.ItemIsEditable
+                )
+                item.setData(Qt.ItemDataRole.UserRole, record.match_id)
+                if column == 0:
+                    deck = next((deck for deck in self._repository.decks if deck.key == record.deck_key), None)
+                    icon = self._class_icon(deck.class_id if deck else record.self_class_id)
+                    if not icon.isNull():
+                        item.setIcon(icon)
+                elif column == 2:
+                    icon = self._class_icon(record.opponent_class_id)
+                    if not icon.isNull():
+                        item.setIcon(icon)
+                self.match_table.setItem(row, column, item)
+        self.match_table.blockSignals(False)
+
+    def _on_match_table_item_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() != 2:
+            return
+        match_id = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(match_id, str) or not match_id:
+            return
+        value = item.text().strip()
+        if value == "（双击输入）":
+            value = ""
+        self._history.update_opponent_deck(match_id, value)
 
     def _reset_stats(self) -> None:
-        active = self._active_deck()
-        if active is None: return
-        answer = QMessageBox.question(self, "重置胜率", f"删除“{active.name}”的本地胜负记录？")
+        filter_key = self._stats_filter_key()
+        if filter_key is None:
+            self._show_info("重置胜率", "请选择具体牌组后再重置。")
+            return
+        deck = next((deck for deck in self._repository.decks if deck.key == filter_key), None)
+        if deck is None:
+            return
+        answer = QMessageBox.question(self, "重置胜率", f"删除“{deck.name}”的本地胜负记录？")
         if answer != QMessageBox.StandardButton.Yes: return
-        self._history.clear_deck(active.key); self._refresh_stats_page(); self._update_header_stats()
+        self._history.clear_deck(filter_key); self._refresh_stats_page(); self._update_header_stats()
 
     # ----- formatting helpers and small dialogs --------------------------------
 
