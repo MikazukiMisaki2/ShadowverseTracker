@@ -15,7 +15,7 @@ from pathlib import Path
 import re
 import sys
 
-from PySide6.QtCore import Qt, QTimer, Signal, QSize
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal, QSize
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
@@ -405,43 +405,232 @@ class ClassWinRateChart(QFrame):
             painter.drawText(center - slot_width // 2 + 2, baseline + 43, label)
 
 
+def _visible_window_rect_for_pid(pid: int | None) -> tuple[int, int, int, int] | None:
+    """Return the largest visible top-level window belonging to ``pid``.
+
+    The tracker is deliberately a normal desktop application, so using the
+    read-only user32 window enumeration here is enough to attach the overlay
+    to the game without injecting anything into the game process.  Keeping the
+    Win32 calls lazy also lets the Qt module remain importable in tooling that
+    is not running on Windows.
+    """
+    if os.name != "nt" or not pid:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+
+        class Rect(ctypes.Structure):
+            _fields_ = [
+                ("left", wintypes.LONG),
+                ("top", wintypes.LONG),
+                ("right", wintypes.LONG),
+                ("bottom", wintypes.LONG),
+            ]
+
+        best: tuple[int, int, int, int] | None = None
+        best_area = 0
+        enum_proc_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def visit(hwnd: int, _lparam: int) -> bool:
+            nonlocal best, best_area
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            owner_pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner_pid))
+            if int(owner_pid.value) != int(pid):
+                return True
+            rect = Rect()
+            if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                return True
+            width = int(rect.right - rect.left)
+            height = int(rect.bottom - rect.top)
+            area = width * height
+            # Ignore tiny helper/tool windows; the Unity/SVWB surface is the
+            # largest visible window for the target process in practice.
+            if width >= 240 and height >= 240 and area > best_area:
+                best_area = area
+                best = (int(rect.left), int(rect.top), width, height)
+            return True
+
+        callback = enum_proc_type(visit)
+        user32.EnumWindows(callback, 0)
+        return best
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
 class OverlayWindow(QWidget):
-    """Small always-on-top deck window with the same visual language."""
+    """Three-column, draggable, always-on-top deck overlay.
+
+    The old Tk overlay showed the whole deck in three compact columns.  Keep
+    that behaviour in the migrated window, while using the SVWB top-level
+    window as the default anchor and height when it is available.
+    """
+
+    _COLUMNS = 3
 
     def __init__(self, parent: "QtTrackerWindow") -> None:
         super().__init__(parent, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.parent_window = parent
         self.setWindowTitle("Shadowverse Tracker · Overlay")
-        self.setMinimumSize(300, 360)
-        self.resize(360, 620)
+        self.setMinimumSize(360, 360)
+        self.resize(430, 720)
         self.setStyleSheet(APP_STYLESHEET + "QWidget#overlayRoot { background:#f4f7fb; }")
         self.setObjectName("overlayRoot")
+        self._drag_start_global: QPoint | None = None
+        self._drag_start_pos: QPoint | None = None
+        self._user_moved = False
+        self._placement_done = False
+        self._attached_pid: int | None = None
+        self._follow_timer = QTimer(self)
+        self._follow_timer.setInterval(500)
+        self._follow_timer.timeout.connect(self._follow_game_window)
         root = QVBoxLayout(self)
-        root.setContentsMargins(10, 10, 10, 10)
-        root.setSpacing(8)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(5)
         self.header = QFrame()
         self.header.setObjectName("headerCard")
+        self.header.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.header.setToolTip("拖动标题栏移动悬浮记牌器")
         header_layout = QVBoxLayout(self.header)
-        header_layout.setContentsMargins(12, 9, 12, 9)
+        header_layout.setContentsMargins(10, 7, 10, 7)
         self.title = StrongBodyLabel("悬浮记牌器")
         self.stats = CaptionLabel("等待对局数据")
+        self.title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.stats.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         header_layout.addWidget(self.title)
         header_layout.addWidget(self.stats)
         root.addWidget(self.header)
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.content = QWidget()
+        self.content.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.grid = QGridLayout(self.content)
         self.grid.setContentsMargins(0, 0, 0, 0)
-        self.grid.setSpacing(7)
-        self.scroll.setWidget(self.content)
-        root.addWidget(self.scroll, 1)
-        close = TransparentPushButton("Esc 关闭")
-        close.clicked.connect(self.close)
-        root.addWidget(close, 0, Qt.AlignmentFlag.AlignRight)
+        self.grid.setHorizontalSpacing(5)
+        self.grid.setVerticalSpacing(5)
+        for column in range(self._COLUMNS):
+            self.grid.setColumnStretch(column, 1)
+        root.addWidget(self.content, 1)
+        self.close_button = TransparentPushButton("Esc 关闭")
+        self.close_button.clicked.connect(self.close)
+        root.addWidget(self.close_button, 0, Qt.AlignmentFlag.AlignRight)
+        for widget in (self.header, self.title, self.stats):
+            widget.installEventFilter(self)
+
+    def _target_pid(self) -> int | None:
+        configured = getattr(self.parent_window, "_startup_pid", None)
+        if isinstance(configured, int) and configured > 0:
+            return configured
+        service = getattr(self.parent_window, "_service", None)
+        detected = getattr(service, "_pid", None)
+        return int(detected) if isinstance(detected, int) and detected > 0 else None
+
+    def _fallback_parent_rect(self) -> tuple[int, int, int, int] | None:
+        try:
+            rect = self.parent_window.frameGeometry()
+            if rect.width() >= 240 and rect.height() >= 240:
+                return rect.x(), rect.y(), rect.width(), rect.height()
+        except (AttributeError, RuntimeError):
+            pass
+        return None
+
+    def _place_next_to_game(self, *, force: bool = False) -> None:
+        if self._user_moved and not force:
+            return
+        pid = self._target_pid()
+        if not force and self._placement_done and pid == self._attached_pid:
+            return
+        rect = _visible_window_rect_for_pid(pid)
+        attached = rect is not None
+        if rect is None:
+            rect = self._fallback_parent_rect()
+        if rect is None:
+            return
+        left, top, game_width, game_height = rect
+        width = max(390, min(460, self.width()))
+        screen = QApplication.screenAt(QPoint(left, top)) or QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else None
+        height = max(360, int(game_height))
+        if available is not None:
+            height = min(height, available.height())
+            y = max(available.top(), min(top, available.bottom() - height + 1))
+            right_x = left + game_width + 6
+            if right_x + width - 1 <= available.right():
+                x = right_x
+            else:
+                x = left - width - 6
+                if x < available.left():
+                    x = max(available.left(), available.right() - width + 1)
+        else:
+            x = left + game_width + 6
+            y = top
+        self.setFixedSize(width, height)
+        self.move(int(x), int(y))
+        self._placement_done = True
+        self._attached_pid = pid if attached else None
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt API name
+        super().showEvent(event)
+        if not self._user_moved:
+            self._place_next_to_game(force=True)
+        self._follow_timer.start()
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt API name
+        self._follow_timer.stop()
+        super().closeEvent(event)
+
+    def _follow_game_window(self) -> None:
+        if not self._user_moved:
+            self._place_next_to_game(force=True)
+
+    def eventFilter(self, watched: object, event: QEvent) -> bool:  # noqa: N802 - Qt API name
+        if watched in (self.header, self.title, self.stats):
+            event_type = event.type()
+            if event_type == QEvent.Type.MouseButtonPress and getattr(event, "button", lambda: None)() == Qt.MouseButton.LeftButton:
+                global_pos = getattr(event, "globalPosition", lambda: QPoint())()
+                self._drag_start_global = global_pos.toPoint() if hasattr(global_pos, "toPoint") else global_pos
+                self._drag_start_pos = self.pos()
+                self._user_moved = True
+                self.header.setCursor(Qt.CursorShape.ClosedHandCursor)
+                return True
+            if event_type == QEvent.Type.MouseMove and self._drag_start_global is not None and self._drag_start_pos is not None:
+                buttons = getattr(event, "buttons", lambda: Qt.MouseButton.NoButton)()
+                if buttons & Qt.MouseButton.LeftButton:
+                    global_pos = getattr(event, "globalPosition", lambda: QPoint())()
+                    point = global_pos.toPoint() if hasattr(global_pos, "toPoint") else global_pos
+                    self.move(self._drag_start_pos + point - self._drag_start_global)
+                    return True
+            if event_type == QEvent.Type.MouseButtonRelease and getattr(event, "button", lambda: None)() == Qt.MouseButton.LeftButton:
+                self._drag_start_global = None
+                self._drag_start_pos = None
+                self.header.setCursor(Qt.CursorShape.OpenHandCursor)
+                return True
+        return super().eventFilter(watched, event)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt API name
+        if event.key() == Qt.Key.Key_Escape:
+            self.close()
+            return
+        super().keyPressEvent(event)
+
+    def _card_image_height(self, card_count: int) -> int:
+        grid_rows = max(1, math.ceil(card_count / self._COLUMNS))
+        available = max(150, self.height() - self.header.sizeHint().height() - self.close_button.sizeHint().height() - 42)
+        row_height = max(36, (available - self.grid.verticalSpacing() * max(0, grid_rows - 1)) // grid_rows)
+        # A deck normally has 15–20 unique cards, but custom lists can have
+        # more.  Keep the lower bound small enough that three columns still
+        # fit every row inside a 720p game window instead of reintroducing a
+        # scrollbar or clipping the final row.
+        return max(8, min(150, row_height - 28))
 
     def update_snapshot(self, snapshot: dict[str, object] | None) -> None:
+        # If the overlay was opened before the reader discovered the game PID,
+        # retry the native attachment on the next snapshot.  Once the user has
+        # dragged it, never snap it back automatically.
+        if not self._user_moved and self._attached_pid is None:
+            self._place_next_to_game()
         while self.grid.count():
             item = self.grid.takeAt(0)
             if item.widget() is not None:
@@ -468,13 +657,12 @@ class OverlayWindow(QWidget):
                 ],
             }
         rows = ledger.get("rows", ())
-        rows = [row for row in rows if isinstance(row, dict)]
+        rows = [row for row in rows if isinstance(row, dict)] if isinstance(rows, (list, tuple)) else []
         rows.sort(key=lambda row: (int(row.get("remaining", 0)) <= 0, self.parent_window._card_sort_key(row)))
         count = ledger.get("authoritative_deck_count", deck.total_cards)
         total = sum(int(row.get("initial", 0)) for row in rows)
         self.title.setText(f"{deck.name}  ·  {count}/{total}")
-        for column in range(2):
-            self.grid.setColumnStretch(column, 1)
+        image_height = self._card_image_height(len(rows))
         for index, row in enumerate(rows):
             card_id = row.get("card_id")
             name = self.parent_window._card_name(card_id)
@@ -482,32 +670,33 @@ class OverlayWindow(QWidget):
             initial = row.get("initial", "?")
             tile = QFrame()
             tile.setObjectName("overlayCardTile")
-            tile.setMinimumWidth(140)
+            tile.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            tile.setFixedHeight(image_height + 28)
+            tile.setToolTip(name)
             tile_layout = QVBoxLayout(tile)
-            tile_layout.setContentsMargins(7, 7, 7, 7)
-            tile_layout.setSpacing(4)
+            tile_layout.setContentsMargins(4, 4, 4, 4)
+            tile_layout.setSpacing(2)
             image = QLabel()
             image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            image.setFixedHeight(150)
-            pixmap = self.parent_window._card_image_pixmap(card_id, 146)
+            image.setFixedHeight(image_height)
+            image.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            pixmap = self.parent_window._card_image_pixmap(card_id, image_height - 2)
             if pixmap is not None and not pixmap.isNull():
                 image.setPixmap(pixmap)
             else:
                 image.setText(name)
                 image.setWordWrap(True)
-                image.setStyleSheet("background:#eaf0f5;border-radius:6px;color:#1d3348;padding:6px;")
+                image.setStyleSheet("background:#eaf0f5;border-radius:6px;color:#1d3348;padding:4px;")
             tile_layout.addWidget(image)
-            name_label = QLabel(name)
-            name_label.setObjectName("cardName")
-            name_label.setWordWrap(True)
-            tile_layout.addWidget(name_label)
             count_label = QLabel(f"剩余 {remaining}/{initial}")
             count_label.setObjectName("cardCount")
+            count_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            count_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
             if isinstance(remaining, int) and remaining <= 0:
                 count_label.setStyleSheet("color:#b33c4b;")
                 tile.setStyleSheet("QFrame#overlayCardTile { border:1px solid #e49ba3; background:#fff7f7; }")
             tile_layout.addWidget(count_label)
-            self.grid.addWidget(tile, index // 2, index % 2)
+            self.grid.addWidget(tile, index // self._COLUMNS, index % self._COLUMNS)
 
 
 class DeckCardTile(QFrame):
