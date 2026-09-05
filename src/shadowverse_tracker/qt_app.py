@@ -336,22 +336,22 @@ class MetricCard(QFrame):
 
 
 class ClassWinRateChart(QFrame):
-    """Small horizontal bar chart for opponent-class win rates."""
+    """Seven-class vertical win-rate chart with matchup colors."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("chartCard")
-        self.setMinimumWidth(280)
-        self.setMinimumHeight(135)
+        self.setMinimumWidth(620)
+        self.setMinimumHeight(220)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self._rows: list[tuple[str, float, int, QIcon]] = []
+        self._rows: list[tuple[str, float, int, int, QIcon]] = []
 
-    def set_rows(self, rows: list[tuple[str, float, int, QIcon]]) -> None:
+    def set_rows(self, rows: list[tuple[str, float, int, int, QIcon]]) -> None:
         self._rows = list(rows)
         self.update()
 
     def sizeHint(self) -> QSize:  # noqa: N802 - Qt API name
-        return QSize(380, 170)
+        return QSize(880, 240)
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt API name
         super().paintEvent(event)
@@ -363,31 +363,46 @@ class ClassWinRateChart(QFrame):
             painter.setPen(QColor("#8798a8"))
             painter.drawText(14, 54, "暂无已完成对局")
             return
-        top = 34
-        row_height = max(23, min(31, (self.height() - top - 10) // len(self._rows)))
-        label_width = 92
-        percent_width = 52
-        bar_left = 14 + label_width
-        bar_width = max(40, self.width() - bar_left - percent_width - 14)
-        for index, (label, rate, finished, icon) in enumerate(self._rows):
-            y = top + index * row_height
-            if not icon.isNull():
-                painter.drawPixmap(14, y + 3, icon.pixmap(QSize(18, 18)))
-                text_left = 37
-            else:
-                text_left = 14
-            painter.setPen(QColor("#385a72"))
-            painter.drawText(text_left, y + 16, label)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor("#edf1f5"))
-            painter.drawRoundedRect(bar_left, y + 5, bar_width, 13, 6, 6)
-            clamped = max(0.0, min(100.0, float(rate)))
-            painter.setBrush(QColor("#169eb0"))
-            painter.drawRoundedRect(bar_left, y + 5, int(bar_width * clamped / 100), 13, 6, 6)
-            painter.setPen(QColor("#244f70"))
-            painter.drawText(self.width() - percent_width, y + 16, f"{clamped:.1f}%")
+        left, right, top, bottom = 34, 24, 38, 62
+        baseline = max(top + 30, self.height() - bottom)
+        chart_height = max(50, baseline - top)
+        slot_width = max(42, (self.width() - left - right) // max(1, len(self._rows)))
+        bar_width = max(22, min(58, int(slot_width * 0.55)))
+        for guide in (0, 50, 100):
+            y = baseline - int(chart_height * guide / 100)
+            painter.setPen(QColor("#e4ebf1"))
+            painter.drawLine(left, y, self.width() - right, y)
             painter.setPen(QColor("#8798a8"))
-            painter.drawText(bar_left, y + row_height - 3, f"{finished} 局")
+            painter.drawText(5, y + 4, f"{guide}%")
+        for index, (label, rate, wins, total, icon) in enumerate(self._rows):
+            center = left + index * slot_width + slot_width // 2
+            x = center - bar_width // 2
+            has_data = total > 0
+            clamped = max(0.0, min(100.0, float(rate)))
+            height = int(chart_height * clamped / 100) if has_data else 0
+            if has_data and clamped >= 50:
+                color = QColor("#43a653")
+            elif has_data and clamped >= 20:
+                color = QColor("#f0b429")
+            elif has_data:
+                color = QColor("#ed5b4f")
+            else:
+                color = QColor("#dfe6eb")
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(color)
+            if height:
+                painter.drawRoundedRect(x, baseline - height, bar_width, height, 5, 5)
+            else:
+                painter.drawRoundedRect(x, baseline - 2, bar_width, 2, 1, 1)
+            painter.setPen(QColor("#244f70"))
+            value = f"{clamped:.1f}%" if has_data else "—"
+            painter.drawText(x - 12, max(top + 14, baseline - height - 6), value)
+            painter.setPen(QColor("#385a72"))
+            painter.drawText(x + bar_width // 2 - 13, baseline - max(16, height // 2), f"{wins}/{total}") if height >= 30 else None
+            if not icon.isNull():
+                painter.drawPixmap(center - 10, baseline + 9, icon.pixmap(QSize(20, 20)))
+            painter.setPen(QColor("#385a72"))
+            painter.drawText(center - slot_width // 2 + 2, baseline + 43, label)
 
 
 class OverlayWindow(QWidget):
@@ -1054,12 +1069,26 @@ class QtTrackerWindow(FluentWindow):
         ):
             stats_metrics.addWidget(metric, 1)
         layout.addLayout(stats_metrics)
+
+        # Keep the chart as a full-width visual block, matching the compact
+        # matchup dashboards users are familiar with.
+        self.stats_class_chart = ClassWinRateChart()
+        layout.addWidget(self.stats_class_chart)
+
         breakdown_title = QHBoxLayout()
-        breakdown_title.addWidget(QLabel("职业 / 先后手胜率"))
+        breakdown_title.addWidget(QLabel("对手职业先后手胜率"))
         breakdown_title.addStretch(1)
-        breakdown_hint = QLabel("按筛选范围汇总")
-        breakdown_hint.setObjectName("muted")
-        breakdown_title.addWidget(breakdown_hint)
+        breakdown_title.addWidget(QLabel("筛选职业"))
+        self.stats_opponent_filter = ComboBox()
+        self.stats_opponent_filter.setMinimumWidth(150)
+        self.stats_opponent_filter.addItem("全部职业", userData="")
+        for class_id in range(1, 8):
+            self.stats_opponent_filter.addItem(class_name(class_id), userData=class_name(class_id))
+            icon = self._class_icon(class_id)
+            if not icon.isNull():
+                self.stats_opponent_filter.setItemIcon(self.stats_opponent_filter.count() - 1, icon)
+        self.stats_opponent_filter.currentIndexChanged.connect(lambda _index: self._refresh_stats_page())
+        breakdown_title.addWidget(self.stats_opponent_filter)
         layout.addLayout(breakdown_title)
         self.stats_breakdown = QTableWidget(0, 5)
         self.stats_breakdown.setObjectName("matchTable")
@@ -1067,23 +1096,18 @@ class QtTrackerWindow(FluentWindow):
         self.stats_breakdown.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.stats_breakdown.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.stats_breakdown.verticalHeader().setVisible(False)
-        self.stats_breakdown.setHorizontalHeaderLabels(("对手职业", "对局", "胜率", "先手", "后手"))
+        self.stats_breakdown.setHorizontalHeaderLabels(("对手职业", "总局数", "先手胜率", "后手胜率", "先手率"))
         breakdown_header = self.stats_breakdown.horizontalHeader()
         for column in range(5):
             breakdown_header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
         # Keep the summary readable without allowing an empty first column to
         # consume the whole window on compact displays.
-        for column, width in ((0, 126), (1, 62), (2, 72), (3, 112), (4, 112)):
+        for column, width in ((0, 126), (1, 72), (2, 112), (3, 112), (4, 92)):
             self.stats_breakdown.setColumnWidth(column, width)
-        self.stats_breakdown.setMinimumWidth(484)
+        self.stats_breakdown.setMinimumWidth(514)
         self.stats_breakdown.setMinimumHeight(135)
-        self.stats_breakdown.setMaximumHeight(190)
-        breakdown_content = QHBoxLayout()
-        breakdown_content.setSpacing(10)
-        breakdown_content.addWidget(self.stats_breakdown, 1)
-        self.stats_class_chart = ClassWinRateChart()
-        breakdown_content.addWidget(self.stats_class_chart, 1)
-        layout.addLayout(breakdown_content)
+        self.stats_breakdown.setMaximumHeight(210)
+        layout.addWidget(self.stats_breakdown)
 
         match_title = QHBoxLayout()
         match_title.addWidget(QLabel("详细对局"))
@@ -1869,9 +1893,17 @@ class QtTrackerWindow(FluentWindow):
         value = combo.currentData()
         return value if isinstance(value, str) and value else None
 
+    def _stats_opponent_filter_name(self) -> str | None:
+        combo = getattr(self, "stats_opponent_filter", None)
+        if combo is None:
+            return None
+        value = combo.currentData()
+        return value if isinstance(value, str) and value else None
+
     def _refresh_stats_page(self) -> None:
         if not hasattr(self, "match_table"): return
         filter_key = self._stats_filter_key()
+        opponent_filter = self._stats_opponent_filter_name()
         stats = self._history.stats(filter_key)
         scope_label = "全部卡组" if filter_key is None else next(
             (deck.name for deck in self._repository.decks if deck.key == filter_key),
@@ -1892,16 +1924,44 @@ class QtTrackerWindow(FluentWindow):
         self.stats_second_metric.set_value(
             f"{float(second['win_rate']):.1f}%", f"{int(second['finished'])} 局"
         )
+        all_by_class = stats.get("by_class", {})
+        all_by_class = all_by_class if isinstance(all_by_class, dict) else {}
+        chart_rows: list[tuple[str, float, int, int, QIcon]] = []
+        for class_id in range(1, 8):
+            opponent_class = class_name(class_id)
+            group = all_by_class.get(opponent_class, {})
+            group = group if isinstance(group, dict) else {}
+            total = int(group.get("finished", 0))
+            wins = int(group.get("wins", 0))
+            chart_rows.append(
+                (
+                    opponent_class,
+                    float(group.get("win_rate", 0.0)),
+                    wins,
+                    total,
+                    self._class_icon(class_id),
+                )
+            )
+        self.stats_class_chart.set_rows(chart_rows)
+
+        # The table has its own opponent-class filter while the chart remains
+        # a seven-class overview for the selected deck.
+        table_stats = self._history.stats(filter_key, opponent_filter)
+        by_class = table_stats.get("by_class", {})
+        by_class = by_class if isinstance(by_class, dict) else {}
+        known_classes = [class_name(class_id) for class_id in range(1, 8)]
+        table_classes = [opponent_filter] if opponent_filter else list(known_classes)
+        if not opponent_filter:
+            table_classes.extend(sorted(str(value) for value in by_class if value not in known_classes))
         self.stats_breakdown.setRowCount(0)
-        chart_rows: list[tuple[str, float, int, QIcon]] = []
-        by_class = stats.get("by_class", {})
-        if isinstance(by_class, dict):
-            for opponent_class, group in sorted(by_class.items(), key=lambda item: str(item[0])):
-                if not isinstance(group, dict):
-                    continue
-                row = self.stats_breakdown.rowCount()
-                self.stats_breakdown.insertRow(row)
-                class_id = next(
+        for opponent_class in table_classes:
+            group = by_class.get(opponent_class, {})
+            group = group if isinstance(group, dict) else {}
+            row = self.stats_breakdown.rowCount()
+            self.stats_breakdown.insertRow(row)
+            class_id = next(
+                (class_id for class_id in range(1, 8) if class_name(class_id) == opponent_class),
+                next(
                     (
                         record.opponent_class_id
                         for record in self._history.records
@@ -1909,35 +1969,29 @@ class QtTrackerWindow(FluentWindow):
                         and (filter_key is None or record.deck_key == filter_key)
                     ),
                     None,
-                )
-                class_item = QTableWidgetItem(str(opponent_class))
-                icon = self._class_icon(class_id)
-                if not icon.isNull():
-                    class_item.setIcon(icon)
-                self.stats_breakdown.setItem(row, 0, class_item)
-                self.stats_breakdown.setItem(row, 1, QTableWidgetItem(str(group.get("finished", 0))))
-                self.stats_breakdown.setItem(row, 2, QTableWidgetItem(f"{float(group.get('win_rate', 0.0)):.1f}%"))
-                first_group = group.get("first", {})
-                second_group = group.get("second", {})
-                self.stats_breakdown.setItem(row, 3, QTableWidgetItem(
-                    f"{float(first_group.get('win_rate', 0.0)):.1f}% · {int(first_group.get('finished', 0))}局"
-                ))
-                self.stats_breakdown.setItem(row, 4, QTableWidgetItem(
-                    f"{float(second_group.get('win_rate', 0.0)):.1f}% · {int(second_group.get('finished', 0))}局"
-                ))
-                chart_rows.append(
-                    (
-                        str(opponent_class),
-                        float(group.get("win_rate", 0.0)),
-                        int(group.get("finished", 0)),
-                        icon,
-                    )
-                )
-        self.stats_class_chart.set_rows(chart_rows)
+                ),
+            )
+            class_item = QTableWidgetItem(opponent_class)
+            icon = self._class_icon(class_id)
+            if not icon.isNull():
+                class_item.setIcon(icon)
+            self.stats_breakdown.setItem(row, 0, class_item)
+            total = int(group.get("finished", 0))
+            first_group = group.get("first", {})
+            first_group = first_group if isinstance(first_group, dict) else {}
+            second_group = group.get("second", {})
+            second_group = second_group if isinstance(second_group, dict) else {}
+            first_total = int(first_group.get("finished", 0))
+            first_rate = first_total * 100 / total if total else 0.0
+            self.stats_breakdown.setItem(row, 1, QTableWidgetItem(str(total)))
+            self.stats_breakdown.setItem(row, 2, QTableWidgetItem(f"{float(first_group.get('win_rate', 0.0)):.1f}%"))
+            self.stats_breakdown.setItem(row, 3, QTableWidgetItem(f"{float(second_group.get('win_rate', 0.0)):.1f}%"))
+            self.stats_breakdown.setItem(row, 4, QTableWidgetItem(f"{first_rate:.1f}%"))
 
         records = [
             record for record in self._history.records
             if (filter_key is None or record.deck_key == filter_key)
+            and (opponent_filter is None or record.opponent_class == opponent_filter)
             and record.result in {"胜利", "失败"}
         ]
         self.match_table.blockSignals(True)

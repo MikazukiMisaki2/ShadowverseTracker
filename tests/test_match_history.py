@@ -47,6 +47,10 @@ class MatchHistoryTests(unittest.TestCase):
             self.assertEqual(stats["second"]["win_rate"], 50.0)
             self.assertEqual(stats["by_class"]["精灵"]["win_rate"], 50.0)
             self.assertEqual(stats["by_class"]["皇家护卫"]["wins"], 1)
+            filtered = restored.stats("deck-a", "精灵")
+            self.assertEqual(filtered["total"], 2)
+            self.assertEqual(filtered["first"]["win_rate"], 100.0)
+            self.assertEqual(filtered["second"]["win_rate"], 0.0)
 
     def test_result_classification_is_conservative(self) -> None:
         self.assertEqual(result_label(101, 20, 10), "胜利")

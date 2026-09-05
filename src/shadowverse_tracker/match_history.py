@@ -187,13 +187,18 @@ class MatchHistory:
     def for_deck(self, deck_key: str) -> list[MatchRecord]:
         return [record for record in self.records if record.deck_key == deck_key]
 
-    def stats(self, deck_key: str | None = None) -> dict[str, object]:
+    def stats(
+        self,
+        deck_key: str | None = None,
+        opponent_class: str | None = None,
+    ) -> dict[str, object]:
         # A record labelled ``结束`` is retained for diagnostics but is not a
         # completed result. In normal operation 105/106 are migrated above,
         # so all displayed games have a win or loss.
         records = [
             record for record in self.records
             if (deck_key is None or record.deck_key == deck_key)
+            and (opponent_class is None or record.opponent_class == opponent_class)
             and record.result in {"胜利", "失败"}
         ]
         grouped: dict[str, dict[str, int | float | dict[str, int | float]]] = {}
