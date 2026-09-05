@@ -54,7 +54,6 @@ from qfluentwidgets import (
     InfoBar,
     InfoBarPosition,
     LineEdit,
-    NavigationItemPosition,
     PrimaryPushButton,
     PushButton,
     StrongBodyLabel,
@@ -82,12 +81,25 @@ from .opponent_key_probability import calculate_key_probability
 from .tracker_service import TrackerConfig, TrackerService
 
 
+CLASS_ICON_FILES = {
+    1: "class_icons/1.svg",  # Forestcraft
+    2: "class_icons/2.svg",  # Swordcraft
+    3: "class_icons/3.svg",  # Runecraft
+    4: "class_icons/4.svg",  # Dragoncraft
+    5: "class_icons/5.svg",  # Abysscraft
+    6: "class_icons/6.svg",  # Havencraft
+    7: "class_icons/7.svg",  # Portalcraft
+}
+
+
 APP_STYLESHEET = """
-QWidget#qtRoot, QWidget#page {
+QWidget#qtRoot, QWidget#page, QWidget#dashboardPage, QWidget#statsPage,
+QWidget#decksPage, QWidget#probabilityPage, QWidget#settingsPage {
     background: #f4f7fb;
     color: #172536;
 }
-QWidget#page {
+QWidget#page, QWidget#dashboardPage, QWidget#statsPage, QWidget#decksPage,
+QWidget#probabilityPage, QWidget#settingsPage {
     background: #f4f7fb;
 }
 QFrame#headerCard, QFrame#statusCard, QFrame#metricCard,
@@ -217,12 +229,6 @@ QLabel#coverBadge {
     font-size: 10px;
     font-weight: 700;
 }
-QLabel#classBadge {
-    border-radius: 17px;
-    color: #ffffff;
-    font-size: 15px;
-    font-weight: 800;
-}
 QLineEdit, QComboBox, QSpinBox {
     min-height: 30px;
     border: 1px solid #cbd9e5;
@@ -310,7 +316,7 @@ class OverlayWindow(QWidget):
     def __init__(self, parent: "QtTrackerWindow") -> None:
         super().__init__(parent, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.parent_window = parent
-        self.setWindowTitle("Shadowverse 悬浮记牌器")
+        self.setWindowTitle("Shadowverse Tracker · Overlay")
         self.setMinimumSize(300, 360)
         self.resize(360, 620)
         self.setStyleSheet(APP_STYLESHEET + "QWidget#overlayRoot { background:#f4f7fb; }")
@@ -555,13 +561,18 @@ class QtTrackerWindow(FluentWindow):
         self.addSubInterface(dashboard, FluentIcon.HOME, "对局仪表盘")
         self.addSubInterface(stats, FluentIcon.HISTORY, "详细统计")
         self.addSubInterface(decks, FluentIcon.LIBRARY, "我的卡组")
-        self.addSubInterface(probability, FluentIcon.SYNC, "计算器")
-        self.addSubInterface(settings, FluentIcon.SETTING, "设置", NavigationItemPosition.BOTTOM)
+        self.addSubInterface(probability, FluentIcon.SYNC, "概率计算器")
+        # Settings remain available to the window logic (connection mode and
+        # recording preferences), but are intentionally not exposed as a
+        # fifth navigation item.  The compact navigation is the four primary
+        # user-facing pages above.
+        self.navigationInterface.setExpandWidth(218)
+        self.navigationInterface.expand(useAni=False)
 
     @staticmethod
-    def _page() -> QWidget:
+    def _page(name: str = "page") -> QWidget:
         page = QWidget()
-        page.setObjectName("page")
+        page.setObjectName(name)
         return page
 
     def _page_layout(self, page: QWidget) -> QVBoxLayout:
@@ -593,7 +604,7 @@ class QtTrackerWindow(FluentWindow):
             application.setWindowIcon(icon)
 
     def _build_dashboard_page(self) -> QWidget:
-        page = self._page()
+        page = self._page("dashboardPage")
         layout = self._page_layout(page)
         header = QFrame()
         header.setObjectName("headerCard")
@@ -601,27 +612,12 @@ class QtTrackerWindow(FluentWindow):
         header_layout.setContentsMargins(16, 12, 16, 13)
         top = QHBoxLayout()
         title_box = QVBoxLayout()
-        title = TitleLabel("影之诗 Tracker")
+        title = TitleLabel("Shadowverse Tracker")
         subtitle = QLabel("只读对局仪表盘 · Steam / 国服")
         subtitle.setObjectName("muted")
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
-        self.dashboard_class_badge = QLabel("—")
-        self.dashboard_class_badge.setObjectName("classBadge")
-        self.dashboard_class_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.dashboard_class_badge.setFixedSize(34, 34)
-        self.dashboard_cover_label = QLabel()
-        self.dashboard_cover_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.dashboard_cover_label.setFixedSize(34, 44)
-        self.dashboard_cover_label.setStyleSheet(
-            "background:#eaf0f5;border:1px solid #dbe4ee;border-radius:6px;"
-        )
-        identity = QHBoxLayout()
-        identity.setSpacing(7)
-        identity.addWidget(self.dashboard_class_badge)
-        identity.addWidget(self.dashboard_cover_label)
-        identity.addLayout(title_box)
-        top.addLayout(identity, 1)
+        top.addLayout(title_box, 1)
         self.status_pill = QLabel(self._status_text)
         self.status_pill.setObjectName("statusPill")
         top.addWidget(self.status_pill, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -633,11 +629,6 @@ class QtTrackerWindow(FluentWindow):
         self.deck_choice.currentIndexChanged.connect(self._select_deck_index)
         controls.addWidget(QLabel("当前牌组"))
         controls.addWidget(self.deck_choice, 1)
-        self.dashboard_choice_badge = QLabel("—")
-        self.dashboard_choice_badge.setObjectName("classBadge")
-        self.dashboard_choice_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.dashboard_choice_badge.setFixedSize(26, 26)
-        controls.addWidget(self.dashboard_choice_badge)
         self.connection_mode = ComboBox()
         self.connection_mode.addItems(("自动", "Steam", "国服"))
         self.connection_mode.setCurrentIndex(0)
@@ -692,7 +683,7 @@ class QtTrackerWindow(FluentWindow):
         return page
 
     def _build_decks_page(self) -> QWidget:
-        page = self._page()
+        page = self._page("decksPage")
         layout = self._page_layout(page)
         title_row = QHBoxLayout()
         title_row.addWidget(SubtitleLabel("我的卡组"))
@@ -722,6 +713,7 @@ class QtTrackerWindow(FluentWindow):
         self.deck_list = QListWidget()
         self.deck_list.setObjectName("deckList")
         self.deck_list.setMinimumWidth(290)
+        self.deck_list.setIconSize(QSize(26, 26))
         self.deck_list.currentRowChanged.connect(self._select_deck_list_row)
         splitter.addWidget(self.deck_list)
         detail = QFrame()
@@ -757,7 +749,7 @@ class QtTrackerWindow(FluentWindow):
         return page
 
     def _build_probability_page(self) -> QWidget:
-        page = self._page()
+        page = self._page("probabilityPage")
         layout = self._page_layout(page)
         title_row = QHBoxLayout()
         title_row.addWidget(SubtitleLabel("概率计算"))
@@ -849,7 +841,7 @@ class QtTrackerWindow(FluentWindow):
         return card
 
     def _build_stats_page(self) -> QWidget:
-        page = self._page()
+        page = self._page("statsPage")
         layout = self._page_layout(page)
         title_row = QHBoxLayout()
         title_row.addWidget(SubtitleLabel("详细统计"))
@@ -891,7 +883,7 @@ class QtTrackerWindow(FluentWindow):
         return page
 
     def _build_settings_page(self) -> QWidget:
-        page = self._page()
+        page = self._page("settingsPage")
         layout = self._page_layout(page)
         layout.addWidget(SubtitleLabel("设置"))
         card = QFrame(); card.setObjectName("settingsCard")
@@ -1034,50 +1026,13 @@ class QtTrackerWindow(FluentWindow):
         self._refresh_deck_choices()
         self._show_info("封面已更新", self._card_name(card_id))
 
-    @staticmethod
-    def _class_badge(class_id: int | None) -> tuple[str, str, str]:
-        badges = {0: "中", 1: "精", 2: "皇", 3: "巫", 4: "龙", 5: "梦", 6: "主", 7: "超"}
-        colors = {
-            0: ("#64748b", "中立"),
-            1: ("#238b57", "精灵"),
-            2: ("#c88727", "皇家护卫"),
-            3: ("#7d58b5", "巫师"),
-            4: ("#c84b46", "龙族"),
-            5: ("#a24a82", "梦魇"),
-            6: ("#3e7fc2", "主教"),
-            7: ("#178b98", "超越者"),
-        }
-        key = int(class_id) if class_id is not None else -1
-        color, name = colors.get(key, ("#718096", "未知职业"))
-        return badges.get(key, "?"), color, name
-
-    def _update_class_badge(self, class_id: int | None) -> None:
-        if not hasattr(self, "dashboard_class_badge"):
-            return
-        badge, color, name = self._class_badge(class_id)
-        for label in (self.dashboard_class_badge, getattr(self, "dashboard_choice_badge", None)):
-            if label is None:
-                continue
-            label.setText(badge)
-            label.setToolTip(f"SVWB 职业：{name}")
-            label.setStyleSheet(
-                f"QLabel#classBadge {{ background:{color}; border-radius:17px; color:#ffffff; "
-                "font-size:15px; font-weight:800; }"
-            )
-
-    def _update_cover_preview(self, deck: SavedDeck | None) -> None:
-        if not hasattr(self, "dashboard_cover_label"):
-            return
-        if deck is None or deck.cover_card_id is None:
-            self.dashboard_cover_label.clear()
-            self.dashboard_cover_label.setText("封面")
-            return
-        pixmap = self._card_image_pixmap(deck.cover_card_id, 40)
-        if pixmap is None or pixmap.isNull():
-            self.dashboard_cover_label.setText("封面")
-            return
-        self.dashboard_cover_label.setText("")
-        self.dashboard_cover_label.setPixmap(pixmap)
+    def _class_icon(self, class_id: int | None) -> QIcon:
+        """Return the official SVWB class mark for a saved deck."""
+        if class_id is None:
+            return QIcon()
+        asset_name = CLASS_ICON_FILES.get(int(class_id))
+        path = self._app_asset_path(asset_name) if asset_name else None
+        return QIcon(str(path)) if path is not None else QIcon()
 
     # ----- deck repository ------------------------------------------------------
 
@@ -1099,6 +1054,10 @@ class QtTrackerWindow(FluentWindow):
                 continue
             combo.blockSignals(True)
             combo.clear(); combo.addItems(labels)
+            for index, deck in enumerate(self._repository.decks, start=1):
+                icon = self._class_icon(deck.class_id)
+                if not icon.isNull():
+                    combo.setItemIcon(index, icon)
             active = self._active_deck()
             combo.setCurrentIndex(self._deck_choice_keys.index(active.key) if active else 0)
             combo.blockSignals(False)
@@ -1111,6 +1070,9 @@ class QtTrackerWindow(FluentWindow):
             for deck in self._repository.decks:
                 item = QListWidgetItem(self._deck_label(deck))
                 item.setData(Qt.ItemDataRole.UserRole, deck.key)
+                icon = self._class_icon(deck.class_id)
+                if not icon.isNull():
+                    item.setIcon(icon)
                 self.deck_list.addItem(item)
             active = self._active_deck()
             self.deck_list.setCurrentRow(self._deck_choice_keys.index(active.key) if active else 0)
@@ -1457,14 +1419,10 @@ class QtTrackerWindow(FluentWindow):
         if active is None:
             self.metric_rate.set_value("—", "未选择牌组")
             self.dashboard_deck_label.setText("未选择本地牌组")
-            self._update_class_badge(None)
-            self._update_cover_preview(None)
             return
         stats = self._history.stats(active.key)
         self.metric_rate.set_value(f"{float(stats['win_rate']):.1f}%", f"{int(stats['finished'])} 局")
         self.dashboard_deck_label.setText(f"{active.name} · {class_name(active.class_id)} / {self._format_mode(active.format_version)}")
-        self._update_class_badge(active.class_id)
-        self._update_cover_preview(active)
 
     # ----- probability and stats ------------------------------------------------
 
