@@ -51,15 +51,52 @@ META_ARCHETYPE_TIERS = {
     "骰子教": "T4",
     "验牌梦": "T4",
     "节奏妖": "T4",
-    "OTK超": "T4",
     "进化超": "T4",
+    "OTK超": "T4",
     "宇宙超": "T4",
-    "节奏进化妖": "T4",
     "进化梦": "T4",
+    "节奏进化妖": "T4",
     "进化妖": "其他",
-    "疾驰教": "其他",
-    "魔神梦": "其他",
     "中速皇": "其他",
+    "魔神梦": "其他",
+    "疾驰教": "其他",
+}
+
+# WBArts' tier panel also defines the order of archetypes within each tier.
+# Keep it separate from the tier map so the UI can sort concrete builds by
+# the same order instead of falling back to class/name ordering.  This is
+# especially important for the catch-all ``其他`` row, whose four entries are
+# otherwise indistinguishable by tier alone.
+META_ARCHETYPE_ORDER = (
+    "中速梦",
+    "跳费龙",
+    "护符教",
+    "造物超",
+    "连击妖",
+    "实验法",
+    "谢幕梦",
+    "旗皇",
+    "进化教",
+    "财宝皇",
+    "脸龙",
+    "协作皇",
+    "增幅法",
+    "快梦",
+    "骰子教",
+    "验牌梦",
+    "节奏妖",
+    "进化超",
+    "OTK超",
+    "宇宙超",
+    "进化梦",
+    "节奏进化妖",
+    "进化妖",
+    "中速皇",
+    "魔神梦",
+    "疾驰教",
+)
+_META_ARCHETYPE_ORDER_INDEX = {
+    archetype: index for index, archetype in enumerate(META_ARCHETYPE_ORDER)
 }
 
 # WBArts currently serializes several archetype filters as ``local:<id>`` in
@@ -90,7 +127,22 @@ def meta_tier_label(value: object = "", archetype: object = "") -> str:
         return "T3"
     if normalized in {"t4", "tier 4", "tier4", "4"}:
         return "T4"
-    if normalized in {"other", "others", "other meta", "其他", "其余"}:
+    if normalized in {
+        "other",
+        "others",
+        "other meta",
+        "unranked",
+        "unranked tier",
+        "其他",
+        "其余",
+    }:
+        # A stale cache may have persisted the old catch-all label even though
+        # its archetype is one of the site's known Tier entries.  Prefer the
+        # current archetype map in that case so those builds return to their
+        # proper T1–T4 section after an app restart.
+        mapped = META_ARCHETYPE_TIERS.get(str(archetype or "").strip())
+        if mapped:
+            return mapped
         return "其他"
     return META_ARCHETYPE_TIERS.get(str(archetype or "").strip(), "其他")
 
@@ -112,6 +164,34 @@ def meta_archetype_label(archetype: object = "", name: object = "") -> str:
             if value == known or value.startswith(f"{known}·") or value.startswith(f"{known} "):
                 return known
     return explicit or candidate
+
+
+def meta_archetype_sort_key(
+    archetype: object = "",
+    name: object = "",
+    tier: object = "",
+) -> tuple[int, int, str, str]:
+    """Return the stable order used by WBArts' Tier / Meta panel.
+
+    ``tier`` remains authoritative when a source supplies one.  For older
+    caches that omit it, the archetype fallback map supplies the current site
+    tier.  Unknown/local labels stay at the end of their tier and retain a
+    deterministic textual order.
+    """
+    label = meta_archetype_label(archetype, name)
+    normalized_tier = meta_tier_label(tier, label)
+    tier_index = (
+        META_TIER_ORDER.index(normalized_tier)
+        if normalized_tier in META_TIER_ORDER
+        else len(META_TIER_ORDER)
+    )
+    archetype_index = _META_ARCHETYPE_ORDER_INDEX.get(label, len(META_ARCHETYPE_ORDER))
+    return (
+        tier_index,
+        archetype_index,
+        label.casefold(),
+        str(name or "").strip().casefold(),
+    )
 
 
 def is_machine_meta_label(value: object) -> bool:
@@ -712,6 +792,7 @@ __all__ = [
     "MetaDeckProfile",
     "meta_profile_from_saved_deck",
     "META_ARCHETYPE_TIERS",
+    "META_ARCHETYPE_ORDER",
     "META_LOCAL_ARCHETYPE_LABELS",
     "META_TIER_ORDER",
     "OpponentDeckMatch",
@@ -724,5 +805,6 @@ __all__ = [
     "save_meta_deck_profiles",
     "meta_tier_label",
     "meta_archetype_label",
+    "meta_archetype_sort_key",
     "writable_meta_decks_path",
 ]

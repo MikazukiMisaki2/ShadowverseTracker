@@ -95,6 +95,7 @@ from .opponent_deck_matcher import (
     canonicalize_meta_deck_labels,
     load_meta_deck_profiles,
     load_session_opponent_observations,
+    meta_archetype_sort_key,
     meta_profile_from_saved_deck,
     meta_tier_label,
 )
@@ -266,6 +267,11 @@ QLineEdit, QComboBox, QSpinBox {
     background: #ffffff;
     color: #1b344b;
 }
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled {
+    background: #eef2f6;
+    color: #7d8996;
+    border-color: #d5dee7;
+}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus {
     border: 1px solid #42a9b5;
 }
@@ -301,6 +307,63 @@ def _plain_spinbox(minimum: int, maximum: int, value: int | None = None) -> QSpi
     if value is not None:
         spin.setValue(value)
     return spin
+
+
+def _opponent_hand_size(snapshot: object, opponent: object) -> int | None:
+    """Return the unknown deck-origin cards currently left in the opponent hand.
+
+    The memory reader masks opponent card identities with ``{"hidden": True}``
+    placeholders, so the list length remains a reliable total hand count even
+    when the actual cards are not revealed.  Publicly identified/generated
+    cards are tracked separately and are excluded from the probability model.
+    """
+    if not isinstance(opponent, dict):
+        return None
+    raw_count = opponent.get("hand_count")
+    if isinstance(raw_count, int) and not isinstance(raw_count, bool) and raw_count >= 0:
+        hand_size = raw_count
+    else:
+        hand = opponent.get("hand")
+        if not isinstance(hand, (list, tuple)):
+            return None
+        hand_size = len(hand)
+
+    known_count = 0
+    knowledge: object = None
+    if isinstance(snapshot, dict):
+        knowledge = snapshot.get("opponent_hand_knowledge")
+    if not isinstance(knowledge, dict):
+        knowledge = opponent.get("opponent_hand_knowledge")
+    if isinstance(knowledge, dict):
+        for key in ("known_cards", "known_types"):
+            items = knowledge.get(key)
+            if not isinstance(items, (list, tuple)):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                count = item.get("count")
+                if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+                    known_count += count
+    return max(0, hand_size - known_count)
+
+
+def _opponent_mulligan_count(snapshot: object, opponent: object) -> int | None:
+    """Read the opponent's replacement count from the latest tracker data."""
+    candidates: list[object] = []
+    if isinstance(snapshot, dict):
+        training = snapshot.get("training_observation")
+        mulligan = training.get("mulligan") if isinstance(training, dict) else None
+        if isinstance(mulligan, dict):
+            candidates.append(mulligan.get("opponent_replaced_count"))
+    if isinstance(opponent, dict):
+        summary = opponent.get("mulligan_summary")
+        if isinstance(summary, dict):
+            candidates.append(summary.get("replaced_count"))
+    for value in candidates:
+        if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 4:
+            return value
+    return None
 
 
 class QtCardPanel(QFrame):
@@ -1038,7 +1101,6 @@ class QtTrackerWindow(FluentWindow):
         self._recognized_opponent_deck_name = ""
         self._recognized_opponent_deck_confidence: float | None = None
         self._record_matches = True
-        self._key_manual_inputs = False
         self._updating_key_inputs = False
         self._set_application_icon()
         self._build_ui()
@@ -1422,7 +1484,18 @@ class QtTrackerWindow(FluentWindow):
             if query and query not in f"{profile.name} {profile.archetype}".casefold():
                 continue
             result.append(profile)
-        return sorted(result, key=lambda profile: (int(profile.class_id), profile.name.casefold(), profile.profile_id))
+        return sorted(
+            result,
+            key=lambda profile: (
+                *meta_archetype_sort_key(
+                    profile.archetype,
+                    profile.name,
+                    profile.tier,
+                ),
+                int(profile.class_id),
+                profile.profile_id,
+            ),
+        )
 
     def _refresh_meta_page(self) -> None:
         if not hasattr(self, "meta_deck_list"):
@@ -1583,6 +1656,17 @@ class QtTrackerWindow(FluentWindow):
         self.key_deck_remaining = _plain_spinbox(0, 36, 36)
         self.key_hand_size = _plain_spinbox(0, 10, 4)
         self.key_mulligan = _plain_spinbox(0, 4, 0)
+        # These values are owned by Tracker snapshots.  Keep them visible for
+        # the calculation, but prevent accidental edits in the probability
+        # form so a later snapshot can always refresh them.
+        self._key_tracker_inputs = (
+            self.key_deck_remaining,
+            self.key_hand_size,
+            self.key_mulligan,
+        )
+        for editor in self._key_tracker_inputs:
+            editor.setEnabled(False)
+            editor.setToolTip("由 Tracker 自动读取")
         self.key_keep1_types = _plain_spinbox(0, 40, 0)
         self.key_keep2_types = _plain_spinbox(0, 40, 0)
         self.key_seen_keep1 = _plain_spinbox(0, 40, 0)
@@ -1590,20 +1674,6 @@ class QtTrackerWindow(FluentWindow):
         self.key_copies = _plain_spinbox(1, 3, 3)
         self.key_limit = _plain_spinbox(0, 3, 1)
         self.key_seen = _plain_spinbox(0, 3, 0)
-        self._key_numeric_inputs = (
-            self.key_deck_remaining,
-            self.key_hand_size,
-            self.key_mulligan,
-            self.key_keep1_types,
-            self.key_keep2_types,
-            self.key_seen_keep1,
-            self.key_seen_keep2,
-            self.key_copies,
-            self.key_limit,
-            self.key_seen,
-        )
-        for editor in self._key_numeric_inputs:
-            editor.valueChanged.connect(self._mark_key_input_manual)
 
         key_grid = QGridLayout()
         key_grid.setHorizontalSpacing(8)
@@ -2565,7 +2635,7 @@ class QtTrackerWindow(FluentWindow):
         self.field_panel.set_text("暂无场面数据\n\n开始对局后显示双方场面")
         self.history_panel.set_text("本局已结束\n\n详细操作保存在训练记录中")
         self._last_snapshot = None
-        self._key_manual_inputs = False
+        self._reset_probability_tracker_inputs()
         self._update_header_stats()
 
     def _format_hand(self, value: object) -> str:
@@ -2636,10 +2706,6 @@ class QtTrackerWindow(FluentWindow):
 
     # ----- probability and stats ------------------------------------------------
 
-    def _mark_key_input_manual(self, _value: object = None) -> None:
-        if not self._updating_key_inputs:
-            self._key_manual_inputs = True
-
     def _sync_key_strategy_inputs(self, _index: int = -1) -> None:
         """Known mode exposes the mulligan-policy fields used by the old UI."""
         known = (self.key_strategy.currentData() or "unknown") == "known"
@@ -2652,20 +2718,28 @@ class QtTrackerWindow(FluentWindow):
         ):
             editor.setEnabled(known)
 
-    def _update_probability_inputs(self, snapshot: dict[str, object], opponent: dict[str, object]) -> None:
-        if self._key_manual_inputs:
+    def _reset_probability_tracker_inputs(self) -> None:
+        """Clear tracker-owned values when the previous match has ended."""
+        if not hasattr(self, "_key_tracker_inputs"):
             return
+        self._updating_key_inputs = True
+        try:
+            self.key_deck_remaining.setValue(36)
+            self.key_hand_size.setValue(4)
+            self.key_mulligan.setValue(0)
+        finally:
+            self._updating_key_inputs = False
+
+    def _update_probability_inputs(self, snapshot: dict[str, object], opponent: dict[str, object]) -> None:
         deck = opponent.get("deck_count")
-        hand = opponent.get("hand")
-        training = snapshot.get("training_observation")
-        mulligan = training.get("mulligan", {}) if isinstance(training, dict) else {}
-        swapped = mulligan.get("opponent_replaced_count") if isinstance(mulligan, dict) else None
+        hand_size = _opponent_hand_size(snapshot, opponent)
+        swapped = _opponent_mulligan_count(snapshot, opponent)
         self._updating_key_inputs = True
         try:
             if isinstance(deck, int):
                 self.key_deck_remaining.setValue(max(0, min(36, deck)))
-            if isinstance(hand, (list, tuple)):
-                self.key_hand_size.setValue(max(0, min(10, len(hand))))
+            if isinstance(hand_size, int):
+                self.key_hand_size.setValue(max(0, min(10, hand_size)))
             if isinstance(swapped, int) and 0 <= swapped <= 4:
                 self.key_mulligan.setValue(swapped)
         finally:

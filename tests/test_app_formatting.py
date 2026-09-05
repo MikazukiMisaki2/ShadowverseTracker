@@ -12,6 +12,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from shadowverse_tracker.app import TrackerApp
 from shadowverse_tracker.card_catalog import get_card_name
 from shadowverse_tracker.opponent_hand import OpponentKnownHand
+from shadowverse_tracker.qt_app import _opponent_hand_size, _opponent_mulligan_count
 
 
 class AppFormattingTests(unittest.TestCase):
@@ -80,6 +81,40 @@ class AppFormattingTests(unittest.TestCase):
     def test_next_turn_key_projection_consumes_one_deck_card(self) -> None:
         self.assertEqual(TrackerApp._project_opponent_next_draw(29, 6), (28, 7))
         self.assertIsNone(TrackerApp._project_opponent_next_draw(0, 6))
+
+    def test_qt_probability_hand_size_uses_masked_count_and_excludes_known_cards(self) -> None:
+        snapshot = {
+            "opponent_hand_knowledge": {
+                "known_cards": [{"card_id": 10052110, "count": 2}],
+                "known_types": [{"kind": "spell", "count": 1}],
+            }
+        }
+        opponent = {"hand": [{"hidden": True} for _ in range(7)]}
+        self.assertEqual(_opponent_hand_size(snapshot, opponent), 4)
+
+    def test_qt_probability_hand_size_prefers_explicit_tracker_count(self) -> None:
+        opponent = {"hand_count": 8, "hand": [{"hidden": True}]}
+        self.assertEqual(_opponent_hand_size({}, opponent), 8)
+
+    def test_qt_probability_hand_size_accepts_knowledge_attached_to_opponent(self) -> None:
+        opponent = {
+            "hand": [{"hidden": True} for _ in range(5)],
+            "opponent_hand_knowledge": {"known_cards": [{"card_id": 1, "count": 1}]},
+        }
+        self.assertEqual(_opponent_hand_size({}, opponent), 4)
+
+    def test_qt_probability_mulligan_count_reads_training_and_summary_fallback(self) -> None:
+        snapshot = {
+            "training_observation": {
+                "mulligan": {"opponent_replaced_count": 3},
+            }
+        }
+        self.assertEqual(_opponent_mulligan_count(snapshot, {}), 3)
+        self.assertEqual(
+            _opponent_mulligan_count({}, {"mulligan_summary": {"replaced_count": 2}}),
+            2,
+        )
+        self.assertIsNone(_opponent_mulligan_count({}, {"mulligan_summary": {"replaced_count": 9}}))
 
     def test_connection_status_hides_verbose_process_names(self) -> None:
         value = TrackerApp._compact_status_message(

@@ -339,12 +339,15 @@ class TrackerService:
             # frames where BattleRoot briefly returns server order.  The class
             # fallback also repairs old adapters that predate unique_id.
             selected_class = self._selected_deck.class_id if self._selected_deck else None
-            root["players"] = orient_player_order(
-                root.get("players"),
+            players = root.get("players")
+            ordered_players = orient_player_order(
+                players,
                 self_class_id=snapshot.get("self_class_id"),
                 opponent_class_id=snapshot.get("opponent_class_id"),
                 expected_self_class_id=selected_class,
             )
+            if ordered_players is not players:
+                root["players"] = ordered_players
         mine: dict[str, object] | None = None
         if isinstance(root, dict):
             players = root.get("players")

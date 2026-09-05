@@ -128,6 +128,8 @@ python .\scripts\refresh_meta_decks.py 13337 150502
 %LOCALAPPDATA%\ShadowverseTracker\matches.json
 ```
 
+`matches.json` 和读取日志保存带时区的 UTC 时间戳；详细统计页面会自动转换为 Windows 的本地时间显示。
+
 ## Key 概率
 
 Tracker 默认使用 `unknown`（未知策略）。这表示无法确定对手留下的是目标 Key，还是其他同样可能被保留的牌，因此不把换牌数量或“看到对手留牌”直接当作 Key 证据。

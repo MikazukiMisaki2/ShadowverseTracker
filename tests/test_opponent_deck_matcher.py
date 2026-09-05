@@ -22,12 +22,15 @@ from shadowverse_tracker.meta_deck_source import (
     refresh_wbarts_meta_cache_daily,
 )
 from shadowverse_tracker.opponent_deck_matcher import (
+    META_ARCHETYPE_ORDER,
     MetaDeckProfile,
     OpponentDeckMatcher,
     canonicalize_meta_deck_labels,
     load_session_opponent_observations,
     load_meta_deck_profiles,
     meta_profile_from_saved_deck,
+    meta_archetype_sort_key,
+    meta_tier_label,
     save_meta_deck_profiles,
 )
 
@@ -37,6 +40,16 @@ def profile(profile_id: str, name: str, cards: dict[int, int]) -> MetaDeckProfil
 
 
 class OpponentDeckMatcherTests(unittest.TestCase):
+    def test_meta_archetype_sort_key_matches_wbarts_tier_order(self) -> None:
+        names = ("疾驰教", "中速皇", "魔神梦", "进化妖")
+        self.assertEqual(
+            sorted(names, key=lambda value: meta_archetype_sort_key(value)),
+            ["进化妖", "中速皇", "魔神梦", "疾驰教"],
+        )
+        self.assertEqual(META_ARCHETYPE_ORDER[0:2], ("中速梦", "跳费龙"))
+        self.assertEqual(meta_tier_label("unranked"), "其他")
+        self.assertEqual(meta_tier_label("其他", "财宝皇"), "T3")
+
     def test_requires_enough_public_evidence(self) -> None:
         matcher = OpponentDeckMatcher((profile("a", "构筑 A", {10000110: 3, 10000210: 3, 10000310: 3}),))
         self.assertIsNone(matcher.match([10000111, 10000111], 5))
