@@ -66,7 +66,12 @@ from qfluentwidgets import (
     Theme,
 )
 
-from .card_catalog import get_card_metadata, get_card_name
+from .card_catalog import (
+    get_card_metadata,
+    get_card_name,
+    is_card_allowed,
+    load_card_catalog,
+)
 from .deck_repository import DeckRepository, SavedDeck
 from .faith_probability import calculate_faith_damage_probability
 from .match_history import (
@@ -432,6 +437,16 @@ class OverlayWindow(QWidget):
             self.grid.addWidget(tile, index // 2, index % 2)
 
 
+class DeckCardTile(QFrame):
+    """Card tile that exposes a lightweight double-click edit affordance."""
+
+    double_clicked = Signal()
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 - Qt API name
+        self.double_clicked.emit()
+        super().mouseDoubleClickEvent(event)
+
+
 class DeckEditorDialog(QDialog):
     """Compact card-count editor for the migrated deck page."""
 
@@ -441,25 +456,37 @@ class DeckEditorDialog(QDialog):
         self.resize(650, 500)
         self.window_ref = window
         self.deck = deck
+        self.counts: dict[int, int] = dict(window._deck_card_counts(deck))
+        try:
+            self.catalog = load_card_catalog()
+        except (OSError, ValueError):
+            self.catalog = {}
         layout = QVBoxLayout(self)
         info = QLabel("修改每种卡牌数量；牌组总数必须保持 40 张。")
         info.setObjectName("muted")
         layout.addWidget(info)
-        self.table = QTableWidget(len(deck.cards), 4)
+        self.table = QTableWidget(0, 4)
         self.table.setObjectName("matchTable")
         self.table.setHorizontalHeaderLabels(("费用", "卡牌名称", "数量", "Card ID"))
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        for row, card in enumerate(deck.cards):
-            metadata = get_card_metadata(card.card_id)
-            cost = str(metadata.cost) if metadata else "?"
-            self.table.setItem(row, 0, QTableWidgetItem(cost))
-            self.table.setItem(row, 1, QTableWidgetItem(window._card_name(card.card_id)))
-            spin = _plain_spinbox(0, 3, card.count)
-            self.table.setCellWidget(row, 2, spin)
-            self.table.setItem(row, 3, QTableWidgetItem(str(card.card_id)))
         layout.addWidget(self.table, 1)
+
+        add_row = QHBoxLayout()
+        add_row.addWidget(QLabel("添加新卡"))
+        self.card_search = QtLineEdit()
+        self.card_search.setPlaceholderText("输入卡牌名称或 Card ID 筛选")
+        self.card_search.textChanged.connect(self._refresh_card_options)
+        add_row.addWidget(self.card_search, 1)
+        self.card_choice = ComboBox()
+        self.card_choice.setMinimumWidth(220)
+        add_row.addWidget(self.card_choice)
+        self.add_card_button = PushButton("添加新卡")
+        self.add_card_button.clicked.connect(self._add_card)
+        add_row.addWidget(self.add_card_button)
+        layout.addLayout(add_row)
+
         self.total_label = QLabel()
         self.total_label.setObjectName("muted")
         layout.addWidget(self.total_label)
@@ -467,10 +494,69 @@ class DeckEditorDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
-        for row in range(self.table.rowCount()):
-            spin = self.table.cellWidget(row, 2)
-            if isinstance(spin, QSpinBox):
-                spin.valueChanged.connect(self._update_total)
+        self._rebuild_table()
+        self._refresh_card_options()
+        self._update_total()
+
+    def _sorted_card_ids(self) -> list[int]:
+        return sorted(
+            self.counts,
+            key=lambda card_id: (
+                get_card_metadata(card_id).cost if get_card_metadata(card_id) else 99,
+                self.window_ref._card_name(card_id),
+                card_id,
+            ),
+        )
+
+    def _rebuild_table(self) -> None:
+        self.table.setRowCount(0)
+        for card_id in self._sorted_card_ids():
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            metadata = get_card_metadata(card_id)
+            cost = str(metadata.cost) if metadata else "?"
+            self.table.setItem(row, 0, QTableWidgetItem(cost))
+            self.table.setItem(row, 1, QTableWidgetItem(self.window_ref._card_name(card_id)))
+            spin = _plain_spinbox(0, 3, self.counts[card_id])
+            spin.valueChanged.connect(self._update_total)
+            spin.editingFinished.connect(lambda value=card_id, editor=spin: self._set_count(value, editor.value()))
+            self.table.setCellWidget(row, 2, spin)
+            self.table.setItem(row, 3, QTableWidgetItem(str(card_id)))
+
+    def _set_count(self, card_id: int, value: int) -> None:
+        if value <= 0:
+            self.counts.pop(card_id, None)
+        else:
+            self.counts[card_id] = min(3, int(value))
+        self._rebuild_table()
+        self._refresh_card_options()
+        self._update_total()
+
+    def _refresh_card_options(self, _query: str | None = None) -> None:
+        query = self.card_search.text().strip().casefold()
+        self.card_choice.blockSignals(True)
+        self.card_choice.clear()
+        for card in sorted(self.catalog.values(), key=lambda item: (item.cost, item.name, item.card_id)):
+            if card.card_id in self.counts:
+                continue
+            if not is_card_allowed(card.card_id, self.deck.class_id, self.deck.format_version):
+                continue
+            if query and query not in card.name.casefold() and query not in str(card.card_id):
+                continue
+            self.card_choice.addItem(f"{card.cost}费 {card.name}", userData=card.card_id)
+        self.card_choice.blockSignals(False)
+
+    def _add_card(self) -> None:
+        card_id = self.card_choice.currentData()
+        if not isinstance(card_id, int) or card_id <= 0:
+            QMessageBox.information(self, "添加卡牌", "请先选择一张可加入当前牌组的卡牌。")
+            return
+        if card_id in self.counts:
+            QMessageBox.information(self, "添加卡牌", "该卡牌已经在当前牌组中，请直接修改数量。")
+            return
+        self.counts[card_id] = 1
+        self._rebuild_table()
+        self._refresh_card_options()
         self._update_total()
 
     def _update_total(self) -> None:
@@ -485,13 +571,26 @@ class DeckEditorDialog(QDialog):
     def cards(self):
         from .memory.deck import DeckCard
 
-        cards = []
-        for row, original in enumerate(self.deck.cards):
+        # Commit the editor currently holding focus as well; clicking Save can
+        # otherwise happen before QSpinBox emits editingFinished().
+        for row in range(self.table.rowCount()):
+            card_item = self.table.item(row, 3)
             spin = self.table.cellWidget(row, 2)
-            count = spin.value() if isinstance(spin, QSpinBox) else original.count
-            if count:
-                cards.append(DeckCard(card_id=original.card_id, count=count))
-        return tuple(cards)
+            if card_item is None or not isinstance(spin, QSpinBox):
+                continue
+            try:
+                card_id = int(card_item.text())
+            except (TypeError, ValueError):
+                continue
+            if spin.value() <= 0:
+                self.counts.pop(card_id, None)
+            else:
+                self.counts[card_id] = spin.value()
+        return tuple(
+            DeckCard(card_id=card_id, count=count)
+            for card_id, count in self.counts.items()
+            if count > 0
+        )
 
     def accept(self) -> None:
         cards = self.cards()
@@ -537,6 +636,11 @@ class QtTrackerWindow(FluentWindow):
         self._card_image_roots = self._find_card_image_roots()
         self._card_image_paths: dict[int, Path | None] = {}
         self._card_image_cache: dict[tuple[int, int], QPixmap] = {}
+        # Counts edited directly in the card grid are kept as a small draft
+        # until the user brings the deck back to exactly 40 cards.  This lets
+        # a user change 2→3 on one card and 3→2 on another without losing the
+        # first edit to the repository's strict 40-card validation.
+        self._deck_card_drafts: dict[str, dict[int, int]] = {}
         self._repository = DeckRepository()
         self._repository_error = ""
         try:
@@ -800,8 +904,8 @@ class QtTrackerWindow(FluentWindow):
         key = self._calculator_card("对手 Key 牌概率")
         key_form = QFormLayout()
         self.key_strategy = ComboBox()
-        self.key_strategy.addItem("Unknown 未知", "unknown")
-        self.key_strategy.addItem("Known 已知", "known")
+        self.key_strategy.addItem("Unknown 未知", userData="unknown")
+        self.key_strategy.addItem("Known 已知", userData="known")
         self.key_deck_remaining = _plain_spinbox(0, 40, 36)
         self.key_hand_size = _plain_spinbox(0, 10, 4)
         self.key_mulligan = _plain_spinbox(0, 4, 0)
@@ -907,9 +1011,13 @@ class QtTrackerWindow(FluentWindow):
         self.stats_breakdown.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.stats_breakdown.verticalHeader().setVisible(False)
         self.stats_breakdown.setHorizontalHeaderLabels(("对手职业", "对局", "胜率", "先手", "后手"))
-        self.stats_breakdown.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for column in range(1, 5):
-            self.stats_breakdown.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        breakdown_header = self.stats_breakdown.horizontalHeader()
+        for column in range(5):
+            breakdown_header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
+        # Keep the summary readable without allowing an empty first column to
+        # consume the whole window on compact displays.
+        for column, width in ((0, 126), (1, 62), (2, 72), (3, 112), (4, 112)):
+            self.stats_breakdown.setColumnWidth(column, width)
         self.stats_breakdown.setMinimumHeight(135)
         self.stats_breakdown.setMaximumHeight(190)
         layout.addWidget(self.stats_breakdown)
@@ -930,13 +1038,21 @@ class QtTrackerWindow(FluentWindow):
         )
         self.match_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.match_table.setHorizontalHeaderLabels(("我的牌组", "对手职业", "对手卡组", "先后手", "回合数", "时间", "结果"))
-        self.match_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self.match_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.match_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.match_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        self.match_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        self.match_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
-        self.match_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+        match_header = self.match_table.horizontalHeader()
+        for column in range(7):
+            match_header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
+        # Five Chinese characters fit in these columns while leaving room for
+        # the class mark.  The remaining metadata stays compact as well.
+        for column, width in (
+            (0, 118),  # 我的牌组 + icon
+            (1, 94),   # 对手职业
+            (2, 126),  # 对手卡组 + icon + inline edit
+            (3, 68),
+            (4, 62),
+            (5, 126),
+            (6, 62),
+        ):
+            self.match_table.setColumnWidth(column, width)
         self.match_table.itemChanged.connect(self._on_match_table_item_changed)
         layout.addWidget(self.match_table, 1)
         return page
@@ -1030,16 +1146,18 @@ class QtTrackerWindow(FluentWindow):
         cover: bool = False,
         allow_cover: bool = False,
     ) -> QFrame:
-        """Create a full-art card tile for the deck page."""
-        tile = QFrame()
+        """Create a full-art card tile with an inline count editor."""
+        tile = DeckCardTile()
         tile.setObjectName("deckCardTile")
         tile.setMinimumWidth(145)
+        tile.setToolTip("双击卡牌或直接编辑数量")
         layout = QVBoxLayout(tile)
         layout.setContentsMargins(7, 7, 7, 7)
         layout.setSpacing(5)
         image = QLabel()
         image.setAlignment(Qt.AlignmentFlag.AlignCenter)
         image.setFixedHeight(164)
+        image.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         pixmap = self._card_image_pixmap(card_id, 158)
         if pixmap is not None and not pixmap.isNull():
             image.setPixmap(pixmap)
@@ -1051,19 +1169,32 @@ class QtTrackerWindow(FluentWindow):
         name = QLabel(self._card_name(card_id))
         name.setObjectName("cardName")
         name.setWordWrap(True)
+        name.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         layout.addWidget(name)
         metadata = get_card_metadata(card_id)
         cost = metadata.cost if metadata else "?"
         count_row = QHBoxLayout()
-        count_label = QLabel(f"{cost}费 · ×{count}")
+        count_label = QLabel(f"{cost}费")
         count_label.setObjectName("cardCount")
+        count_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         count_row.addWidget(count_label)
+        count_editor = _plain_spinbox(0, 3, count)
+        count_editor.setFixedWidth(48)
+        count_editor.setToolTip("数量（双击卡牌可编辑）")
+        count_editor.editingFinished.connect(
+            lambda value=card_id, editor=count_editor: self._set_deck_card_draft(value, editor.value())
+        )
+        count_row.addWidget(count_editor)
         if cover:
             cover_label = QLabel("封面")
             cover_label.setObjectName("coverBadge")
+            cover_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
             count_row.addWidget(cover_label, 0, Qt.AlignmentFlag.AlignRight)
         count_row.addStretch(1)
         layout.addLayout(count_row)
+        tile.double_clicked.connect(
+            lambda editor=count_editor: self._focus_card_count_editor(editor)
+        )
         if allow_cover:
             cover_button = PushButton("已是封面" if cover else "设为封面")
             cover_button.setEnabled(not cover)
@@ -1072,6 +1203,42 @@ class QtTrackerWindow(FluentWindow):
             )
             layout.addWidget(cover_button)
         return tile
+
+    @staticmethod
+    def _focus_card_count_editor(editor: QSpinBox) -> None:
+        editor.setFocus(Qt.FocusReason.MouseFocusReason)
+        editor.lineEdit().selectAll()
+
+    def _set_deck_card_draft(self, card_id: int, count: int) -> None:
+        deck = self._active_deck()
+        if deck is None:
+            return
+        counts = self._deck_card_counts(deck)
+        if card_id not in counts:
+            return
+        if count <= 0:
+            counts.pop(card_id, None)
+        else:
+            counts[card_id] = min(3, int(count))
+        total = sum(counts.values())
+        self._deck_card_drafts[deck.key] = counts
+        if total == deck.total_cards:
+            # A complete deck can be persisted immediately.  Keeping the
+            # repository as the source of truth also preserves match binding.
+            from .memory.deck import DeckCard
+
+            try:
+                updated = self._repository.update_cards(
+                    deck.key,
+                    tuple(DeckCard(card_id=value, count=amount) for value, amount in counts.items() if amount > 0),
+                )
+            except (OSError, KeyError, ValueError) as exc:
+                self._show_error("数量保存失败", str(exc))
+                return
+            self._deck_card_drafts.pop(deck.key, None)
+            self._on_deck_saved(updated)
+            return
+        self._render_deck_detail()
 
     def _set_cover_card(self, card_id: int) -> None:
         deck = self._active_deck()
@@ -1098,12 +1265,21 @@ class QtTrackerWindow(FluentWindow):
     def _active_deck(self) -> SavedDeck | None:
         return self._repository.active()
 
+    def _deck_card_counts(self, deck: SavedDeck) -> dict[int, int]:
+        """Return persisted counts plus any in-progress grid edits."""
+        draft = self._deck_card_drafts.get(deck.key)
+        if draft is not None:
+            return dict(draft)
+        return {card.card_id: card.count for card in deck.cards}
+
     @staticmethod
     def _format_mode(value: int) -> str:
         return "轮换" if int(value) == 1 else "无限"
 
     def _deck_label(self, deck: SavedDeck) -> str:
-        return f"{deck.name}（{class_name(deck.class_id)} / {self._format_mode(deck.format_version)} / {deck.total_cards}张）"
+        # The repository only accepts complete decks, so repeating ``40张`` in
+        # every selector item adds noise without conveying new information.
+        return f"{deck.name}（{class_name(deck.class_id)} / {self._format_mode(deck.format_version)}）"
 
     def _refresh_deck_choices(self) -> None:
         self._deck_choice_keys = [None, *[deck.key for deck in self._repository.decks]]
@@ -1178,27 +1354,41 @@ class QtTrackerWindow(FluentWindow):
             empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.deck_card_grid.addWidget(empty, 0, 0, 1, 4)
             return
+        counts = self._deck_card_counts(deck)
+        draft_total = sum(counts.values())
         self.deck_detail_title.setText(
-            f"{deck.name} · {class_name(deck.class_id)} · {self._format_mode(deck.format_version)} · {deck.total_cards}/40"
+            f"{deck.name} · {class_name(deck.class_id)} · {self._format_mode(deck.format_version)} · {draft_total}/40"
         )
-        self.deck_detail_hint.setText(
-            f"封面：{self._card_name(deck.cover_card_id) if deck.cover_card_id else '未设置'} · 点击卡牌下方按钮更换"
-        )
+        hint = f"封面：{self._card_name(deck.cover_card_id) if deck.cover_card_id else '未设置'} · 点击卡牌下方按钮更换"
+        if deck.key in self._deck_card_drafts:
+            hint += f" · 数量草稿 {draft_total}/40，补齐后自动保存"
+        self.deck_detail_hint.setText(hint)
         cards = sorted(
-            deck.cards,
+            counts.items(),
             key=lambda item: (
-                get_card_metadata(item.card_id).cost if get_card_metadata(item.card_id) else 99,
-                self._card_name(item.card_id),
+                get_card_metadata(item[0]).cost if get_card_metadata(item[0]) else 99,
+                self._card_name(item[0]),
             ),
         )
         for index, card in enumerate(cards):
             tile = self._make_card_tile(
-                card.card_id,
-                card.count,
-                cover=card.card_id == deck.cover_card_id,
+                card[0],
+                card[1],
+                cover=card[0] == deck.cover_card_id,
                 allow_cover=True,
             )
             self.deck_card_grid.addWidget(tile, index // 4, index % 4)
+        add_tile = QFrame()
+        add_tile.setObjectName("deckCardTile")
+        add_layout = QVBoxLayout(add_tile)
+        add_layout.setContentsMargins(12, 12, 12, 12)
+        add_layout.addStretch(1)
+        add_button = PrimaryPushButton("添加新卡")
+        add_button.setToolTip("打开编辑器，搜索并添加当前职业允许的卡牌")
+        add_button.clicked.connect(self._add_new_card)
+        add_layout.addWidget(add_button)
+        add_layout.addStretch(1)
+        self.deck_card_grid.addWidget(add_tile, len(cards) // 4, len(cards) % 4)
         for column in range(4):
             self.deck_card_grid.setColumnStretch(column, 1)
 
@@ -1224,6 +1414,7 @@ class QtTrackerWindow(FluentWindow):
         self._show_info("牌组已保存", f"已识别：{class_name(saved.class_id)} / {self._format_mode(saved.format_version)}")
 
     def _on_deck_saved(self, deck: SavedDeck) -> None:
+        self._deck_card_drafts.pop(deck.key, None)
         self._refresh_deck_choices()
         self._restart_service_deck()
 
@@ -1234,6 +1425,13 @@ class QtTrackerWindow(FluentWindow):
             return
         dialog = DeckEditorDialog(self, deck)
         dialog.exec()
+
+    def _add_new_card(self) -> None:
+        """Open the editor's searchable add-card control from the grid tail."""
+        if self._active_deck() is None:
+            self._show_info("添加新卡", "请先选择一个牌组。")
+            return
+        self._edit_deck()
 
     def _delete_deck(self) -> None:
         deck = self._active_deck()
@@ -1556,7 +1754,12 @@ class QtTrackerWindow(FluentWindow):
         combo.clear()
         combo.addItem("全部卡组", None)
         for deck in self._repository.decks:
-            combo.addItem(self._deck_label(deck), deck.key)
+            # QFluentWidgets.ComboBox follows the Qt signature
+            # ``addItem(text, icon=None, userData=None)``.  Passing the key as
+            # the second positional argument silently stores it as an icon,
+            # leaving currentData() empty and making the page appear stuck on
+            # “全部卡组”.
+            combo.addItem(self._deck_label(deck), userData=deck.key)
             icon = self._class_icon(deck.class_id)
             if not icon.isNull():
                 combo.setItemIcon(combo.count() - 1, icon)
