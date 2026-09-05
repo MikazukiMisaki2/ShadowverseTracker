@@ -364,6 +364,27 @@ class ClassWinRateChart(QFrame):
         self._mode = value
         self.update()
 
+    @staticmethod
+    def _rate_color(rate: float, has_data: bool) -> QColor:
+        """Map 30%→70% continuously from red through yellow to green."""
+        if not has_data:
+            return QColor("#dfe6eb")
+        red = QColor("#e24b4b")
+        yellow = QColor("#e6bd3f")
+        green = QColor("#43a653")
+        clamped = max(0.0, min(100.0, float(rate)))
+        if clamped <= 50.0:
+            amount = max(0.0, min(1.0, (clamped - 30.0) / 20.0))
+            start, end = red, yellow
+        else:
+            amount = max(0.0, min(1.0, (clamped - 50.0) / 20.0))
+            start, end = yellow, green
+        return QColor(
+            round(start.red() + (end.red() - start.red()) * amount),
+            round(start.green() + (end.green() - start.green()) * amount),
+            round(start.blue() + (end.blue() - start.blue()) * amount),
+        )
+
     def sizeHint(self) -> QSize:  # noqa: N802 - Qt API name
         return QSize(880, 260)
 
@@ -415,14 +436,7 @@ class ClassWinRateChart(QFrame):
             clamped = max(0.0, min(100.0, float(rate)))
             value = clamped if self._mode == "rate" else float(total)
             height = int(chart_height * value / scale_max) if has_data else 0
-            if has_data and clamped >= 50:
-                color = QColor("#43a653")
-            elif has_data and clamped >= 20:
-                color = QColor("#f0b429")
-            elif has_data:
-                color = QColor("#ed5b4f")
-            else:
-                color = QColor("#dfe6eb")
+            color = self._rate_color(clamped, has_data)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(color)
             if height:
@@ -959,6 +973,9 @@ class QtTrackerWindow(FluentWindow):
         self._card_image_index: dict[int, Path] | None = None
         self._card_image_cache: dict[tuple[int, int], QPixmap] = {}
         self._deck_detail_render_pending = False
+        self._deck_detail_dirty = True
+        self._deck_image_generation = 0
+        self._deck_image_queue: list[tuple[QLabel, int]] = []
         # Counts edited directly in the card grid are kept as a small draft
         # until the user brings the deck back to exactly 40 cards.  This lets
         # a user change 2→3 on one card and 3→2 on another without losing the
@@ -1002,6 +1019,7 @@ class QtTrackerWindow(FluentWindow):
         self.probability_page = probability
         self.stats_page = stats
         self.settings_page = settings
+        self.decks_page.installEventFilter(self)
         self.addSubInterface(dashboard, FluentIcon.HOME, "对局仪表盘")
         self.addSubInterface(stats, FluentIcon.HISTORY, "详细统计")
         self.addSubInterface(decks, FluentIcon.LIBRARY, "我的卡组")
@@ -1453,6 +1471,26 @@ class QtTrackerWindow(FluentWindow):
     def _switch_page(self, page: QWidget) -> None:
         self.switchTo(page)
 
+    def switchTo(self, interface: QWidget) -> None:  # noqa: N802 - FluentWindow API
+        super().switchTo(interface)
+        if interface is getattr(self, "decks_page", None) and self._deck_detail_dirty:
+            self._schedule_deck_detail_render()
+
+    def _is_page_current(self, page: QWidget | None) -> bool:
+        if page is None:
+            return False
+        stacked = getattr(self, "stackedWidget", None)
+        try:
+            return stacked is not None and stacked.currentWidget() is page
+        except (AttributeError, RuntimeError):
+            return bool(page.isVisible())
+
+    def eventFilter(self, watched: object, event: QEvent) -> bool:  # noqa: N802 - Qt API name
+        if watched is getattr(self, "decks_page", None) and event.type() == QEvent.Type.Show:
+            if self._deck_detail_dirty:
+                self._schedule_deck_detail_render()
+        return super().eventFilter(watched, event)
+
     # ----- card art and deck identity ----------------------------------------
 
     @staticmethod
@@ -1521,6 +1559,8 @@ class QtTrackerWindow(FluentWindow):
         self,
         card_id: int,
         count: int,
+        *,
+        load_image: bool = True,
     ) -> QFrame:
         """Create a full-art card tile with an inline count editor."""
         tile = DeckCardTile()
@@ -1531,16 +1571,20 @@ class QtTrackerWindow(FluentWindow):
         layout.setContentsMargins(7, 7, 7, 7)
         layout.setSpacing(5)
         image = QLabel()
+        image.setObjectName("deckCardImage")
         image.setAlignment(Qt.AlignmentFlag.AlignCenter)
         image.setFixedHeight(164)
         image.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        pixmap = self._card_image_pixmap(card_id, 158)
+        pixmap = self._card_image_pixmap(card_id, 158) if load_image else None
         if pixmap is not None and not pixmap.isNull():
             image.setPixmap(pixmap)
-        else:
+        elif load_image:
             image.setText(self._card_name(card_id))
             image.setWordWrap(True)
             image.setStyleSheet("background:#eaf0f5;border-radius:6px;color:#1d3348;padding:6px;")
+        else:
+            image.setText("加载中…")
+            image.setStyleSheet("color:#8798a8;")
         layout.addWidget(image)
         name = QLabel(self._card_name(card_id))
         name.setObjectName("cardName")
@@ -1616,7 +1660,8 @@ class QtTrackerWindow(FluentWindow):
             self._deck_card_drafts.pop(deck.key, None)
             self._on_deck_saved(updated)
             return
-        self._render_deck_detail()
+        self._deck_detail_dirty = True
+        self._schedule_deck_detail_render()
 
     def _class_icon(self, class_id: int | None) -> QIcon:
         """Return the official SVWB class mark for a saved deck."""
@@ -1682,7 +1727,9 @@ class QtTrackerWindow(FluentWindow):
             self.deck_list.setCurrentRow(self._deck_choice_keys.index(active.key) if active else 0)
             self.deck_list.blockSignals(False)
         self._refresh_stats_filter()
-        self._render_deck_detail()
+        self._deck_detail_dirty = True
+        if self._is_page_current(getattr(self, "decks_page", None)):
+            self._schedule_deck_detail_render()
         self._update_header_stats()
         self._refresh_stats_page()
 
@@ -1704,21 +1751,22 @@ class QtTrackerWindow(FluentWindow):
             deck_list.blockSignals(True)
             deck_list.setCurrentRow(index)
             deck_list.blockSignals(False)
-        self._refresh_stats_filter()
         if render_detail:
-            self._render_deck_detail()
+            self._deck_detail_dirty = True
+            if self._is_page_current(getattr(self, "decks_page", None)):
+                self._schedule_deck_detail_render()
         self._update_header_stats()
-        self._refresh_stats_page()
 
     def _schedule_deck_detail_render(self) -> None:
-        """Render card art after the selection event can repaint its highlight."""
+        """Render the visible deck after its selection highlight can repaint."""
         if self._deck_detail_render_pending:
             return
         self._deck_detail_render_pending = True
 
         def render() -> None:
             self._deck_detail_render_pending = False
-            self._render_deck_detail()
+            if self._is_page_current(getattr(self, "decks_page", None)):
+                self._render_deck_detail()
 
         QTimer.singleShot(0, render)
 
@@ -1737,8 +1785,12 @@ class QtTrackerWindow(FluentWindow):
         # Keep the existing combo/list items in place so the clicked row stays
         # highlighted and the expensive card-grid rebuild is not mixed with
         # item insertion/selection signals.
+        self._deck_detail_dirty = True
+        self._deck_image_generation += 1
+        self._deck_image_queue.clear()
         self._sync_deck_selection_ui(render_detail=False)
-        self._schedule_deck_detail_render()
+        if self._is_page_current(getattr(self, "decks_page", None)):
+            self._schedule_deck_detail_render()
         self._restart_service_deck()
 
     def _select_deck_list_row(self, row: int) -> None:
@@ -1748,10 +1800,16 @@ class QtTrackerWindow(FluentWindow):
         deck = self._active_deck()
         if not hasattr(self, "deck_card_grid"):
             return
+        self._deck_detail_dirty = False
+        self._deck_image_generation += 1
+        image_generation = self._deck_image_generation
+        self._deck_image_queue.clear()
         while self.deck_card_grid.count():
             item = self.deck_card_grid.takeAt(0)
             if item.widget() is not None:
-                item.widget().deleteLater()
+                widget = item.widget()
+                widget.setParent(None)
+                widget.deleteLater()
         if deck is None:
             self.deck_detail_title.setText("牌组卡牌")
             self.deck_detail_hint.setText("未选择牌组；选择左侧空项可进行特殊/解密对局")
@@ -1771,17 +1829,18 @@ class QtTrackerWindow(FluentWindow):
         self.deck_detail_hint.setText(hint)
         cards = sorted(
             counts.items(),
-            key=lambda item: (
-                get_card_metadata(item[0]).cost if get_card_metadata(item[0]) else 99,
-                self._card_name(item[0]),
-            ),
+            key=lambda item: self._deck_card_sort_key(item[0]),
         )
         for index, card in enumerate(cards):
             tile = self._make_card_tile(
                 card[0],
                 card[1],
+                load_image=False,
             )
             self.deck_card_grid.addWidget(tile, index // 4, index % 4)
+            image = tile.findChild(QLabel, "deckCardImage")
+            if image is not None:
+                self._deck_image_queue.append((image, card[0]))
         add_tile = QFrame()
         add_tile.setObjectName("deckCardTile")
         add_layout = QVBoxLayout(add_tile)
@@ -1795,6 +1854,38 @@ class QtTrackerWindow(FluentWindow):
         self.deck_card_grid.addWidget(add_tile, len(cards) // 4, len(cards) % 4)
         for column in range(4):
             self.deck_card_grid.setColumnStretch(column, 1)
+        if self._deck_image_queue:
+            QTimer.singleShot(0, lambda generation=image_generation: self._load_deck_image_chunk(generation))
+
+    def _deck_card_sort_key(self, card_id: int) -> tuple[int, str]:
+        metadata = get_card_metadata(card_id)
+        return (metadata.cost if metadata else 99, self._card_name(card_id))
+
+    def _load_deck_image_chunk(self, generation: int) -> None:
+        """Load a few card images per event-loop turn to keep deck switching responsive."""
+        if generation != self._deck_image_generation:
+            return
+        for _ in range(2):
+            if not self._deck_image_queue:
+                break
+            image, card_id = self._deck_image_queue.pop(0)
+            try:
+                if image is None or image.parent() is None:
+                    continue
+                pixmap = self._card_image_pixmap(card_id, 158)
+                if pixmap is not None and not pixmap.isNull():
+                    image.setStyleSheet("")
+                    image.setText("")
+                    image.setPixmap(pixmap)
+                else:
+                    image.setText(self._card_name(card_id))
+                    image.setWordWrap(True)
+                    image.setObjectName("cardImageFallback")
+                    image.setStyleSheet("background:#eaf0f5;border-radius:6px;color:#1d3348;padding:6px;")
+            except RuntimeError:
+                continue
+        if generation == self._deck_image_generation and self._deck_image_queue:
+            QTimer.singleShot(0, lambda: self._load_deck_image_chunk(generation))
 
     def _import_deck(self) -> None:
         raw = self.deck_url.text().strip()
