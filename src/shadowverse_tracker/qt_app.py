@@ -544,6 +544,7 @@ class DeckEditorDialog(QDialog):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.cellDoubleClicked.connect(self._begin_table_count_edit)
         layout.addWidget(self.table, 1)
 
         add_row = QHBoxLayout()
@@ -591,10 +592,24 @@ class DeckEditorDialog(QDialog):
             self.table.setItem(row, 0, QTableWidgetItem(cost))
             self.table.setItem(row, 1, QTableWidgetItem(self.window_ref._card_name(card_id)))
             spin = _plain_spinbox(0, 3, self.counts[card_id])
+            spin.setReadOnly(True)
+            spin.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            spin.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            spin.setToolTip("双击这一行编辑数量")
             spin.valueChanged.connect(self._update_total)
             spin.editingFinished.connect(lambda value=card_id, editor=spin: self._set_count(value, editor.value()))
             self.table.setCellWidget(row, 2, spin)
             self.table.setItem(row, 3, QTableWidgetItem(str(card_id)))
+
+    def _begin_table_count_edit(self, row: int, _column: int) -> None:
+        spin = self.table.cellWidget(row, 2)
+        if not isinstance(spin, QSpinBox):
+            return
+        spin.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        spin.setReadOnly(False)
+        spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        spin.setFocus(Qt.FocusReason.MouseFocusReason)
+        spin.lineEdit().selectAll()
 
     def _set_count(self, card_id: int, value: int) -> None:
         if value <= 0:
@@ -729,6 +744,8 @@ class QtTrackerWindow(FluentWindow):
         except (OSError, ValueError) as exc:
             self._history_error = str(exc)
         self._record_matches = True
+        self._key_manual_inputs = False
+        self._updating_key_inputs = False
         self._set_application_icon()
         self._build_ui()
         self.snapshot_received.connect(self._render_snapshot)
@@ -978,24 +995,58 @@ class QtTrackerWindow(FluentWindow):
         grid.addWidget(draw, 0, 0)
 
         key = self._calculator_card("对手 Key 牌概率")
-        key_form = QFormLayout()
         self.key_strategy = ComboBox()
         self.key_strategy.addItem("Unknown 未知", userData="unknown")
         self.key_strategy.addItem("Known 已知", userData="known")
-        self.key_deck_remaining = _plain_spinbox(0, 40, 36)
+        self.key_strategy.currentIndexChanged.connect(self._sync_key_strategy_inputs)
+        self.key_deck_remaining = _plain_spinbox(0, 36, 36)
         self.key_hand_size = _plain_spinbox(0, 10, 4)
         self.key_mulligan = _plain_spinbox(0, 4, 0)
-        self.key_copies = _plain_spinbox(0, 40, 3)
-        self.key_limit = _plain_spinbox(0, 4, 1)
-        self.key_seen = _plain_spinbox(0, 40, 0)
-        key_form.addRow("策略", self.key_strategy)
-        key_form.addRow("对手牌库", self.key_deck_remaining)
-        key_form.addRow("未知手牌", self.key_hand_size)
-        key_form.addRow("换牌数量", self.key_mulligan)
-        key_form.addRow("Key投入", self.key_copies)
-        key_form.addRow("留牌上限", self.key_limit)
-        key_form.addRow("Key已见", self.key_seen)
-        key.layout().addLayout(key_form)
+        self.key_keep1_types = _plain_spinbox(0, 40, 0)
+        self.key_keep2_types = _plain_spinbox(0, 40, 0)
+        self.key_seen_keep1 = _plain_spinbox(0, 40, 0)
+        self.key_seen_keep2 = _plain_spinbox(0, 40, 0)
+        self.key_copies = _plain_spinbox(1, 3, 3)
+        self.key_limit = _plain_spinbox(0, 3, 1)
+        self.key_seen = _plain_spinbox(0, 3, 0)
+        self._key_numeric_inputs = (
+            self.key_deck_remaining,
+            self.key_hand_size,
+            self.key_mulligan,
+            self.key_keep1_types,
+            self.key_keep2_types,
+            self.key_seen_keep1,
+            self.key_seen_keep2,
+            self.key_copies,
+            self.key_limit,
+            self.key_seen,
+        )
+        for editor in self._key_numeric_inputs:
+            editor.valueChanged.connect(self._mark_key_input_manual)
+
+        key_grid = QGridLayout()
+        key_grid.setHorizontalSpacing(8)
+        key_grid.setVerticalSpacing(6)
+        key_grid.addWidget(QLabel("策略"), 0, 0)
+        key_grid.addWidget(self.key_strategy, 0, 1, 1, 3)
+
+        def pair(row: int, label: str, editor: QSpinBox, column: int) -> None:
+            key_grid.addWidget(QLabel(label), row, column)
+            key_grid.addWidget(editor, row, column + 1)
+
+        pair(1, "对手牌库", self.key_deck_remaining, 0)
+        pair(1, "未知手牌", self.key_hand_size, 2)
+        pair(2, "换牌数量", self.key_mulligan, 0)
+        pair(2, "留1类型", self.key_keep1_types, 2)
+        pair(3, "留2类型", self.key_keep2_types, 0)
+        pair(3, "已见留1", self.key_seen_keep1, 2)
+        pair(4, "已见留2", self.key_seen_keep2, 0)
+        pair(4, "Key投入", self.key_copies, 2)
+        pair(5, "Key留牌上限", self.key_limit, 0)
+        pair(5, "Key已见", self.key_seen, 2)
+        key_grid.setColumnStretch(1, 1)
+        key_grid.setColumnStretch(3, 1)
+        key.layout().addLayout(key_grid)
         key_buttons = QHBoxLayout()
         key_now = PrimaryPushButton("计算当前")
         key_now.clicked.connect(lambda: self._calculate_key(False))
@@ -1021,9 +1072,10 @@ class QtTrackerWindow(FluentWindow):
         self.faith_result = QLabel("每个信仰点独立以 1/3 概率分配给 X、Y、Z")
         self.faith_result.setWordWrap(True); self.faith_result.setObjectName("muted")
         faith.layout().addWidget(self.faith_result)
-        grid.addWidget(faith, 1, 0, 1, 2)
+        grid.addWidget(faith, 1, 0)
         grid.setColumnStretch(0, 1); grid.setColumnStretch(1, 1)
         layout.addLayout(grid)
+        self._sync_key_strategy_inputs()
         layout.addStretch(1)
         return page
 
@@ -1271,22 +1323,34 @@ class QtTrackerWindow(FluentWindow):
         count_row.addWidget(count_label)
         count_editor = _plain_spinbox(0, 3, count)
         count_editor.setFixedWidth(48)
-        count_editor.setToolTip("数量（双击卡牌可编辑）")
+        count_editor.setReadOnly(True)
+        count_editor.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        count_editor.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        count_editor.setToolTip("双击卡牌编辑数量")
         count_editor.editingFinished.connect(
-            lambda value=card_id, editor=count_editor: self._set_deck_card_draft(value, editor.value())
+            lambda value=card_id, editor=count_editor: self._finish_card_count_edit(value, editor)
         )
         count_row.addWidget(count_editor)
         count_row.addStretch(1)
         layout.addLayout(count_row)
         tile.double_clicked.connect(
-            lambda editor=count_editor: self._focus_card_count_editor(editor)
+            lambda editor=count_editor: self._begin_card_count_edit(editor)
         )
         return tile
 
     @staticmethod
-    def _focus_card_count_editor(editor: QSpinBox) -> None:
+    def _begin_card_count_edit(editor: QSpinBox) -> None:
+        editor.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        editor.setReadOnly(False)
+        editor.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         editor.setFocus(Qt.FocusReason.MouseFocusReason)
         editor.lineEdit().selectAll()
+
+    def _finish_card_count_edit(self, card_id: int, editor: QSpinBox) -> None:
+        editor.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        editor.setReadOnly(True)
+        editor.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._set_deck_card_draft(card_id, editor.value())
 
     def _set_deck_card_draft(self, card_id: int, count: int) -> None:
         deck = self._active_deck()
@@ -1294,6 +1358,8 @@ class QtTrackerWindow(FluentWindow):
             return
         counts = self._deck_card_counts(deck)
         if card_id not in counts:
+            return
+        if counts[card_id] == count and deck.key not in self._deck_card_drafts:
             return
         if count <= 0:
             counts.pop(card_id, None)
@@ -1744,6 +1810,7 @@ class QtTrackerWindow(FluentWindow):
         self.field_panel.set_text("暂无场面数据\n\n开始对局后显示双方场面")
         self.history_panel.set_text("本局已结束\n\n详细操作保存在训练记录中")
         self._last_snapshot = None
+        self._key_manual_inputs = False
         self._update_header_stats()
 
     def _format_hand(self, value: object) -> str:
@@ -1807,11 +1874,40 @@ class QtTrackerWindow(FluentWindow):
 
     # ----- probability and stats ------------------------------------------------
 
+    def _mark_key_input_manual(self, _value: object = None) -> None:
+        if not self._updating_key_inputs:
+            self._key_manual_inputs = True
+
+    def _sync_key_strategy_inputs(self, _index: int = -1) -> None:
+        """Known mode exposes the mulligan-policy fields used by the old UI."""
+        known = (self.key_strategy.currentData() or "unknown") == "known"
+        for editor in (
+            self.key_keep1_types,
+            self.key_keep2_types,
+            self.key_seen_keep1,
+            self.key_seen_keep2,
+            self.key_limit,
+        ):
+            editor.setEnabled(known)
+
     def _update_probability_inputs(self, snapshot: dict[str, object], opponent: dict[str, object]) -> None:
+        if self._key_manual_inputs:
+            return
         deck = opponent.get("deck_count")
-        if isinstance(deck, int): self.key_deck_remaining.setValue(max(0, min(40, deck)))
         hand = opponent.get("hand")
-        if isinstance(hand, (list, tuple)): self.key_hand_size.setValue(max(0, min(10, len(hand))))
+        training = snapshot.get("training_observation")
+        mulligan = training.get("mulligan", {}) if isinstance(training, dict) else {}
+        swapped = mulligan.get("opponent_replaced_count") if isinstance(mulligan, dict) else None
+        self._updating_key_inputs = True
+        try:
+            if isinstance(deck, int):
+                self.key_deck_remaining.setValue(max(0, min(36, deck)))
+            if isinstance(hand, (list, tuple)):
+                self.key_hand_size.setValue(max(0, min(10, len(hand))))
+            if isinstance(swapped, int) and 0 <= swapped <= 4:
+                self.key_mulligan.setValue(swapped)
+        finally:
+            self._updating_key_inputs = False
 
     def _calculate_draw_probability(self) -> None:
         index = self.probability_card.currentIndex()
@@ -1831,7 +1927,10 @@ class QtTrackerWindow(FluentWindow):
             deck_remaining=deck_remaining,
             hand_size=hand_size,
             mulligan_swapped=self.key_mulligan.value(),
-            keep1_types=0, keep2_types=0, seen_keep1=0, seen_keep2=0,
+            keep1_types=self.key_keep1_types.value(),
+            keep2_types=self.key_keep2_types.value(),
+            seen_keep1=self.key_seen_keep1.value(),
+            seen_keep2=self.key_seen_keep2.value(),
             key_copies=self.key_copies.value(), key_keep_limit=self.key_limit.value(),
             key_seen=self.key_seen.value(), strategy=self.key_strategy.currentData() or "unknown",
         )
