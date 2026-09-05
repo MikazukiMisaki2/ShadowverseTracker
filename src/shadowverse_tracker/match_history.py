@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 import json
 import os
 from pathlib import Path
+from typing import Mapping
+
+from .card_catalog import canonical_card_id
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # The order used by the official deck format.  Keep the numeric ID in records
 # as well, so an updated translation can be applied without losing history.
@@ -38,6 +41,116 @@ def class_name(class_id: int | None) -> str:
     return CLASS_NAMES.get(int(class_id), f"职业 {class_id}")
 
 
+def orient_player_order(
+    players: object,
+    *,
+    self_class_id: object = None,
+    opponent_class_id: object = None,
+    expected_self_class_id: object = None,
+) -> object:
+    """Put the local player (BattleState player id ``1``) first.
+
+    ``BattleRootMpo.players`` is usually emitted in local/opponent order, but
+    a terminal response can briefly expose the two entries in server order.
+    The player ``unique_id`` is stable across that transition and is the
+    preferred ownership marker available in the public root snapshot.  Older
+    logs may predate that field; when a selected deck class is available, the
+    two BattleInfo class IDs provide a conservative fallback for those rows.
+    Incomplete snapshots remain untouched so callers can still use their
+    historical positional fallback.
+    """
+    if not isinstance(players, (list, tuple)) or len(players) != 2:
+        return players
+
+    def _unique_id(value: object) -> int | None:
+        if not isinstance(value, Mapping):
+            return None
+        raw = value.get("unique_id")
+        if isinstance(raw, bool) or raw is None:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    first_id = _unique_id(players[0])
+    second_id = _unique_id(players[1])
+    should_swap = second_id == 1 and first_id != 1
+    if not should_swap:
+        def _class_id(value: object) -> int | None:
+            if isinstance(value, bool) or value is None:
+                return None
+            try:
+                candidate = int(value)
+            except (TypeError, ValueError):
+                return None
+            return candidate if 0 <= candidate <= 7 else None
+
+        expected = _class_id(expected_self_class_id)
+        current_self = _class_id(self_class_id)
+        current_opponent = _class_id(opponent_class_id)
+        should_swap = (
+            expected is not None
+            and current_self is not None
+            and current_opponent == expected
+            and current_self != expected
+        )
+    if not should_swap:
+        return players
+    ordered = (players[1], players[0])
+    return list(ordered) if isinstance(players, list) else ordered
+
+
+def format_timestamp_local(value: object, *, tz: tzinfo | None = None) -> str:
+    """Format a stored ISO timestamp in the user's local time zone.
+
+    New records are persisted as UTC-aware ISO strings.  Older records may be
+    naive strings, so those are deliberately treated as already-local values
+    instead of silently shifting them a second time.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return "—"
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return raw.replace("T", " ")[:16]
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(tz) if tz is not None else parsed.astimezone()
+    return parsed.strftime("%Y-%m-%d %H:%M")
+
+
+def orient_class_ids(
+    self_class_id: object,
+    opponent_class_id: object,
+    expected_self_class_id: object = None,
+) -> tuple[int | None, int | None]:
+    """Orient the reader's two class IDs to the selected local deck.
+
+    The BattleInfo user collection is not always ordered like the public
+    player collection.  When the selected deck gives us an authoritative local
+    class, use it to correct that occasional reversal while retaining the
+    reader values as the fallback.
+    """
+    def _as_id(value: object) -> int | None:
+        if isinstance(value, bool):
+            return None
+        try:
+            candidate = int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+        return candidate if candidate is not None and 0 <= candidate <= 7 else None
+
+    current_self = _as_id(self_class_id)
+    current_opponent = _as_id(opponent_class_id)
+    expected = _as_id(expected_self_class_id)
+    if expected is None:
+        return current_self, current_opponent
+    if current_opponent == expected and current_self != expected:
+        return expected, current_self
+    return expected, current_opponent
+
+
 def result_label(result_code: int, self_life: int | None, opponent_life: int | None) -> str:
     """Classify terminal snapshots conservatively.
 
@@ -60,6 +173,26 @@ def result_label(result_code: int, self_life: int | None, opponent_life: int | N
     if result_code == 106:
         return "失败"
     return "结束"
+
+
+def _normalise_played_card_ids(value: object) -> tuple[int, ...]:
+    """Store public played-card observations in a compact stable shape."""
+    if not isinstance(value, (list, tuple)):
+        return ()
+    result: list[int] = []
+    for item in value:
+        raw: object = item
+        if isinstance(item, dict):
+            raw = item.get("base_card_id") or item.get("card_id")
+        elif isinstance(item, (list, tuple)) and item:
+            raw = item[0]
+        try:
+            card_id = canonical_card_id(int(raw))
+        except (TypeError, ValueError):
+            continue
+        if card_id > 0:
+            result.append(card_id)
+    return tuple(result)
 
 
 def terminal_match_id(
@@ -94,6 +227,9 @@ class MatchRecord:
     turn: int | None
     is_first: bool | None = None
     opponent_deck_name: str = ""
+    # Only public cards that the opponent has played are retained.  Hidden
+    # cards are never inferred or persisted as if they were known.
+    opponent_played_card_ids: tuple[int, ...] = ()
 
 
 class MatchHistory:
@@ -105,7 +241,7 @@ class MatchHistory:
         if not self.path.exists():
             return self
         value = json.loads(self.path.read_text(encoding="utf-8"))
-        if not isinstance(value, dict) or int(value.get("schema_version", 0)) not in (1, 2, 3, SCHEMA_VERSION):
+        if not isinstance(value, dict) or int(value.get("schema_version", 0)) not in (1, 2, 3, 4, SCHEMA_VERSION):
             raise ValueError("不支持的对局记录格式")
         migrated = int(value.get("schema_version", 0)) != SCHEMA_VERSION
         records = value.get("records", ())
@@ -121,14 +257,20 @@ class MatchHistory:
                 if result == "结束" and result_code in {105, 106}:
                     result = "胜利" if result_code == 105 else "失败"
                     migrated = True
+                opponent_class_id = int(item["opponent_class_id"]) if item.get("opponent_class_id") is not None else None
+                opponent_class = str(item.get("opponent_class") or "未知职业")
+                canonical_opponent_class = class_name(opponent_class_id) if opponent_class_id is not None else opponent_class
+                if opponent_class_id is not None and opponent_class != canonical_opponent_class:
+                    migrated = True
+                    opponent_class = canonical_opponent_class
                 parsed.append(MatchRecord(
                     match_id=str(item["match_id"]),
                     timestamp=str(item["timestamp"]),
                     deck_key=str(item["deck_key"]),
                     deck_name=str(item["deck_name"]),
                     self_class_id=int(item["self_class_id"]) if item.get("self_class_id") is not None else None,
-                    opponent_class_id=int(item["opponent_class_id"]) if item.get("opponent_class_id") is not None else None,
-                    opponent_class=str(item.get("opponent_class") or "未知职业"),
+                    opponent_class_id=opponent_class_id,
+                    opponent_class=opponent_class,
                     result=result,
                     result_code=result_code,
                     turn=int(item["turn"]) if item.get("turn") is not None else None,
@@ -138,6 +280,11 @@ class MatchHistory:
                         or item.get("opponent_deck")
                         or ""
                     ).strip(),
+                    opponent_played_card_ids=_normalise_played_card_ids(
+                        item.get("opponent_played_card_ids")
+                        or item.get("opponent_observed_card_ids")
+                        or ()
+                    ),
                 ))
             except (KeyError, TypeError, ValueError):
                 continue
@@ -175,6 +322,96 @@ class MatchHistory:
             return True
         return False
 
+    def update_opponent_played_cards(self, match_id: str, card_ids: object) -> bool:
+        """Persist public opponent cards without changing a manual label."""
+        observed = _normalise_played_card_ids(card_ids)
+        for index, record in enumerate(self.records):
+            if record.match_id != match_id:
+                continue
+            if record.opponent_played_card_ids == observed:
+                return False
+            self.records[index] = replace(record, opponent_played_card_ids=observed)
+            self.save()
+            return True
+        return False
+
+    def reconcile_deck_class_ids(self, deck_class_ids: Mapping[str, object]) -> int:
+        """Correct class orientation using the saved deck's known class.
+
+        A BattleInfo snapshot can occasionally return its two class IDs in the
+        opposite order from the public player list.  Saved deck metadata is a
+        reliable local-side anchor, so swap only when the opponent slot holds
+        that expected class; unrelated or unknown rows are left untouched.
+        """
+        changed = False
+        updates = 0
+        for index, record in enumerate(self.records):
+            expected = deck_class_ids.get(record.deck_key)
+            local_class_id, opponent_class_id = orient_class_ids(
+                record.self_class_id,
+                record.opponent_class_id,
+                expected,
+            )
+            opponent_class = class_name(opponent_class_id)
+            if (
+                local_class_id == record.self_class_id
+                and opponent_class_id == record.opponent_class_id
+                and opponent_class == record.opponent_class
+            ):
+                continue
+            self.records[index] = replace(
+                record,
+                self_class_id=local_class_id,
+                opponent_class_id=opponent_class_id,
+                opponent_class=opponent_class,
+            )
+            changed = True
+            updates += 1
+        if changed:
+            self.save()
+        return updates
+
+    def auto_match_opponent_decks(
+        self,
+        matcher: object,
+        observations: object = None,
+    ) -> int:
+        """Fill blank opponent-deck labels from public-card observations.
+
+        ``matcher`` is intentionally duck-typed here to keep this persistence
+        module independent of the optional meta-deck source.  User-entered
+        labels are never overwritten.  ``observations`` may provide terminal
+        match IDs from an older app-session log; the longest observation wins.
+        The return value is the number of newly labelled rows.
+        """
+        external: dict[str, object] = observations if isinstance(observations, dict) else {}
+        changed = False
+        labels_added = 0
+        for index, record in enumerate(self.records):
+            observed = record.opponent_played_card_ids
+            candidate = _normalise_played_card_ids(external.get(record.match_id))
+            if len(candidate) > len(observed):
+                observed = candidate
+            updated = record
+            if observed != record.opponent_played_card_ids:
+                updated = replace(updated, opponent_played_card_ids=observed)
+                changed = True
+            if not updated.opponent_deck_name and observed:
+                try:
+                    match = matcher.match(observed, updated.opponent_class_id)
+                except (AttributeError, TypeError, ValueError):
+                    match = None
+                label = str(getattr(match, "label", "") or "").strip() if match is not None else ""
+                if label:
+                    updated = replace(updated, opponent_deck_name=label)
+                    changed = True
+                    labels_added += 1
+            if updated != record:
+                self.records[index] = updated
+        if changed:
+            self.save()
+        return labels_added
+
     def clear_deck(self, deck_key: str) -> int:
         """Delete all locally saved match records for one deck."""
         before = len(self.records)
@@ -182,6 +419,15 @@ class MatchHistory:
         removed = before - len(self.records)
         if removed:
             self.save()
+        return removed
+
+    def clear_all(self) -> int:
+        """Delete all locally saved match records and return the count."""
+        removed = len(self.records)
+        if not removed:
+            return 0
+        self.records = []
+        self.save()
         return removed
 
     def for_deck(self, deck_key: str) -> list[MatchRecord]:
@@ -263,6 +509,9 @@ __all__ = [
     "MatchRecord",
     "class_name",
     "default_history_path",
+    "format_timestamp_local",
+    "orient_class_ids",
+    "orient_player_order",
     "result_label",
     "terminal_match_id",
 ]

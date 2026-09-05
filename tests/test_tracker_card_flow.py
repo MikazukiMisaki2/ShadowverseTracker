@@ -14,6 +14,67 @@ from shadowverse_tracker.tracker_service import TrackerConfig, TrackerService
 
 
 class TrackerCardFlowTests(unittest.TestCase):
+    def test_selected_deck_orients_reversed_snapshot_classes(self) -> None:
+        deck = DeckInfoSnapshot(
+            "0x1",
+            1,
+            "orientation-test",
+            5,
+            1,
+            (DeckCard(10000010, 40),),
+        )
+        service = TrackerService(TrackerConfig(selected_deck=deck), on_snapshot=lambda _snapshot: None)
+        service._ledger = None
+        snapshot = {
+            "self_class_id": 1,
+            "opponent_class_id": 5,
+            "root": {
+                "players": [
+                    {"turn": 1, "result_code": 0, "played_card_ids": [], "hand": []},
+                    {"played_card_ids": [], "hand": []},
+                ],
+            },
+            "events": [],
+        }
+
+        service._attach_deck_state(snapshot)
+
+        self.assertEqual(snapshot["self_class_id"], 5)
+        self.assertEqual(snapshot["opponent_class_id"], 1)
+
+    def test_terminal_snapshot_orients_reversed_players_and_result(self) -> None:
+        deck = DeckInfoSnapshot(
+            "0x1",
+            1,
+            "orientation-terminal-test",
+            5,
+            1,
+            (DeckCard(10000010, 40),),
+        )
+        service = TrackerService(TrackerConfig(selected_deck=deck), on_snapshot=lambda _snapshot: None)
+        service._ledger = None
+        snapshot = {
+            "self_class_id": 1,
+            "opponent_class_id": 5,
+            "root": {
+                # The server-order terminal frame puts the opponent first.
+                "players": [
+                    {"unique_id": 2, "turn": 10, "result_code": 106, "life": 7, "played_card_ids": [], "hand": []},
+                    {"unique_id": 1, "turn": 10, "result_code": 105, "life": 14, "played_card_ids": [], "hand": []},
+                ],
+            },
+            "events": [],
+        }
+
+        service._attach_deck_state(snapshot)
+
+        players = snapshot["root"]["players"]
+        self.assertEqual(players[0]["unique_id"], 1)
+        self.assertEqual(players[1]["unique_id"], 2)
+        self.assertEqual(snapshot["self_class_id"], 5)
+        self.assertEqual(snapshot["opponent_class_id"], 1)
+        self.assertEqual(service._snapshot_result(snapshot), "胜利")
+
     def test_named_overdraw_is_recorded_and_consumed_from_deck(self) -> None:
         cat = 10752110
         other_ids = [11000010 + index * 10 for index in range(37)]

@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import sys
+from threading import Thread
 
 from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal, QSize
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
@@ -79,12 +80,24 @@ from .match_history import (
     MatchHistory,
     MatchRecord,
     class_name,
+    format_timestamp_local,
+    orient_class_ids,
     result_label,
     terminal_match_id,
 )
+from .meta_deck_source import refresh_wbarts_meta_cache_daily
 from .official_deck import OfficialDeckError, import_deck_code, parse_official_deck
 from .opponent_key_probability import calculate_key_probability
-from .opponent_deck_matcher import OpponentDeckMatcher, load_meta_deck_profiles
+from .opponent_deck_matcher import (
+    META_TIER_ORDER,
+    MetaDeckProfile,
+    OpponentDeckMatcher,
+    canonicalize_meta_deck_labels,
+    load_meta_deck_profiles,
+    load_session_opponent_observations,
+    meta_profile_from_saved_deck,
+    meta_tier_label,
+)
 from .tracker_service import TrackerConfig, TrackerService
 
 
@@ -101,12 +114,12 @@ CLASS_ICON_FILES = {
 
 APP_STYLESHEET = """
 QWidget#qtRoot, QWidget#page, QWidget#dashboardPage, QWidget#statsPage,
-QWidget#decksPage, QWidget#probabilityPage, QWidget#settingsPage {
+QWidget#decksPage, QWidget#metaPage, QWidget#probabilityPage, QWidget#settingsPage {
     background: #f4f7fb;
     color: #172536;
 }
 QWidget#page, QWidget#dashboardPage, QWidget#statsPage, QWidget#decksPage,
-QWidget#probabilityPage, QWidget#settingsPage {
+QWidget#metaPage, QWidget#probabilityPage, QWidget#settingsPage {
     background: #f4f7fb;
 }
 QFrame#headerCard, QFrame#statusCard, QFrame#metricCard,
@@ -949,6 +962,8 @@ class QtTrackerWindow(FluentWindow):
     status_received = Signal(str)
     error_received = Signal(object)
     deck_received = Signal(object)
+    opponent_backfill_received = Signal(object)
+    meta_cache_received = Signal(object)
 
     def __init__(self, args: argparse.Namespace) -> None:
         super().__init__()
@@ -994,10 +1009,32 @@ class QtTrackerWindow(FluentWindow):
             self._history.load()
         except (OSError, ValueError) as exc:
             self._history_error = str(exc)
+        # A BattleInfo snapshot can occasionally reverse the two class IDs.
+        # The saved deck's class is authoritative for the local side, so repair
+        # any affected rows before the statistics page is first rendered.
+        try:
+            self._history.reconcile_deck_class_ids({
+                deck.key: deck.class_id for deck in self._repository.decks
+            })
+        except (OSError, ValueError) as exc:
+            self._history_error = str(exc)
         # Opponent deck recognition is intentionally offline and conservative:
         # the polling thread only supplies public played-card IDs, while this
         # cached matcher waits for enough evidence before assigning a label.
-        self._opponent_deck_matcher = OpponentDeckMatcher(load_meta_deck_profiles())
+        loaded_meta_profiles = load_meta_deck_profiles()
+        bundled_meta_path = Path(__file__).resolve().parent / "data" / "meta_decks.json"
+        bundled_meta_profiles = load_meta_deck_profiles(bundled_meta_path) if bundled_meta_path.is_file() else ()
+        self._remote_meta_profiles: tuple[MetaDeckProfile, ...] = canonicalize_meta_deck_labels(
+            loaded_meta_profiles,
+            bundled_meta_profiles,
+        )
+        self._meta_profiles: tuple[MetaDeckProfile, ...] = self._merge_local_meta_profiles(
+            self._remote_meta_profiles,
+        )
+        self._meta_refresh_in_progress = False
+        self._meta_refresh_status = "使用本地缓存"
+        self._opponent_backfill_in_progress = False
+        self._opponent_deck_matcher = OpponentDeckMatcher(self._meta_profiles)
         self._recognized_opponent_deck_name = ""
         self._recognized_opponent_deck_confidence: float | None = None
         self._record_matches = True
@@ -1009,8 +1046,15 @@ class QtTrackerWindow(FluentWindow):
         self.status_received.connect(self._set_status)
         self.error_received.connect(self._on_error)
         self.deck_received.connect(self._on_deck_event)
+        self.opponent_backfill_received.connect(self._apply_opponent_deck_backfill)
+        self.meta_cache_received.connect(self._apply_meta_cache_refresh)
         self._refresh_deck_choices()
         self._refresh_stats_page()
+        # Existing history rows predate persisted opponent-card observations.
+        # Defer the optional log scan until the window is shown so loading the
+        # dashboard remains responsive, especially for large session logs.
+        QTimer.singleShot(0, self._start_opponent_deck_backfill)
+        QTimer.singleShot(0, self._start_meta_cache_refresh)
         QTimer.singleShot(250, self._start_service)
 
     # ----- shell and navigation -------------------------------------------------
@@ -1018,11 +1062,13 @@ class QtTrackerWindow(FluentWindow):
     def _build_ui(self) -> None:
         dashboard = self._build_dashboard_page()
         decks = self._build_decks_page()
+        meta = self._build_meta_page()
         probability = self._build_probability_page()
         stats = self._build_stats_page()
         settings = self._build_settings_page()
         self.dashboard_page = dashboard
         self.decks_page = decks
+        self.meta_page = meta
         self.probability_page = probability
         self.stats_page = stats
         self.settings_page = settings
@@ -1030,6 +1076,7 @@ class QtTrackerWindow(FluentWindow):
         self.addSubInterface(dashboard, FluentIcon.HOME, "对局仪表盘")
         self.addSubInterface(stats, FluentIcon.HISTORY, "详细统计")
         self.addSubInterface(decks, FluentIcon.LIBRARY, "我的卡组")
+        self.addSubInterface(meta, FluentIcon.GLOBE, "Meta 卡组")
         self.addSubInterface(probability, FluentIcon.SYNC, "概率计算器")
         # Settings remain available to the window logic (connection mode and
         # recording preferences), but are intentionally not exposed as a
@@ -1223,6 +1270,282 @@ class QtTrackerWindow(FluentWindow):
         self.deck_page_hint.setObjectName("muted")
         layout.addWidget(self.deck_page_hint)
         return page
+
+    def _local_meta_profiles(self) -> tuple[MetaDeckProfile, ...]:
+        """Build in-memory Meta entries for every saved local deck."""
+        profiles: list[MetaDeckProfile] = []
+        for deck in self._repository.decks:
+            profile = meta_profile_from_saved_deck(deck)
+            if profile is not None:
+                profiles.append(profile)
+        return tuple(profiles)
+
+    def _merge_local_meta_profiles(
+        self,
+        profiles: tuple[MetaDeckProfile, ...] | list[MetaDeckProfile],
+    ) -> tuple[MetaDeckProfile, ...]:
+        """Keep WBArts cache and private saved decks in one UI/matcher list."""
+        merged = list(profiles)
+        seen = {profile.profile_id for profile in merged}
+        for profile in self._local_meta_profiles():
+            if profile.profile_id not in seen:
+                merged.append(profile)
+                seen.add(profile.profile_id)
+        return tuple(merged)
+
+    def _refresh_local_meta_profiles(self) -> None:
+        """Refresh local Meta entries after a deck is added, edited or deleted."""
+        self._meta_profiles = self._merge_local_meta_profiles(self._remote_meta_profiles)
+        self._opponent_deck_matcher = OpponentDeckMatcher(self._meta_profiles)
+        if hasattr(self, "meta_deck_list"):
+            self._refresh_meta_page()
+
+    def _build_meta_page(self) -> QWidget:
+        """Build the lightweight, text-only view of the cached Meta builds."""
+        page = self._page("metaPage")
+        layout = self._page_layout(page)
+
+        title_row = QHBoxLayout()
+        title_row.addWidget(SubtitleLabel("Meta 卡组"))
+        title_row.addStretch(1)
+        self.meta_cache_status = QLabel(self._meta_refresh_status)
+        self.meta_cache_status.setObjectName("muted")
+        title_row.addWidget(self.meta_cache_status)
+        layout.addLayout(title_row)
+
+        filters = QFrame()
+        filters.setObjectName("actionCard")
+        filter_layout = QHBoxLayout(filters)
+        filter_layout.setContentsMargins(12, 9, 12, 9)
+        filter_layout.setSpacing(8)
+        filter_layout.addWidget(QLabel("模式"))
+        self.meta_format_filter = ComboBox()
+        self.meta_format_filter.addItem("全部模式", userData="")
+        self.meta_format_filter.addItem("轮换", userData="rotation")
+        self.meta_format_filter.addItem("无限", userData="unlimited")
+        self.meta_format_filter.currentIndexChanged.connect(lambda _index: self._refresh_meta_page())
+        filter_layout.addWidget(self.meta_format_filter)
+        filter_layout.addWidget(QLabel("职业"))
+        self.meta_class_filter = ComboBox()
+        self.meta_class_filter.addItem("全部职业", userData=0)
+        for class_id in range(1, 8):
+            self.meta_class_filter.addItem(class_name(class_id), userData=class_id)
+            icon = self._class_icon(class_id)
+            if not icon.isNull():
+                self.meta_class_filter.setItemIcon(self.meta_class_filter.count() - 1, icon)
+        self.meta_class_filter.currentIndexChanged.connect(lambda _index: self._refresh_meta_page())
+        filter_layout.addWidget(self.meta_class_filter)
+        self.meta_search = LineEdit()
+        self.meta_search.setPlaceholderText("搜索卡组名称或类型")
+        self.meta_search.textChanged.connect(lambda _text: self._refresh_meta_page())
+        filter_layout.addWidget(self.meta_search, 1)
+        layout.addWidget(filters)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        self.meta_deck_list = QListWidget()
+        self.meta_deck_list.setObjectName("deckList")
+        self.meta_deck_list.setMinimumWidth(300)
+        self.meta_deck_list.setIconSize(QSize(24, 24))
+        self.meta_deck_list.currentRowChanged.connect(self._select_meta_deck_row)
+        splitter.addWidget(self.meta_deck_list)
+
+        detail = QFrame()
+        detail.setObjectName("panelCard")
+        detail_layout = QVBoxLayout(detail)
+        detail_layout.setContentsMargins(12, 10, 12, 12)
+        detail_layout.setSpacing(7)
+        detail_top = QHBoxLayout()
+        self.meta_detail_title = QLabel("卡组卡牌")
+        self.meta_detail_title.setObjectName("sectionTitle")
+        detail_top.addWidget(self.meta_detail_title)
+        detail_top.addStretch(1)
+        self.meta_detail_hint = QLabel("仅显示文字，减少图片加载")
+        self.meta_detail_hint.setObjectName("muted")
+        detail_top.addWidget(self.meta_detail_hint)
+        detail_layout.addLayout(detail_top)
+        self.meta_card_table = QTableWidget(0, 3)
+        self.meta_card_table.setObjectName("matchTable")
+        self.meta_card_table.setAlternatingRowColors(True)
+        self.meta_card_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.meta_card_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.meta_card_table.verticalHeader().setVisible(False)
+        self.meta_card_table.setHorizontalHeaderLabels(("费用", "卡牌名称", "数量"))
+        meta_header = self.meta_card_table.horizontalHeader()
+        meta_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        meta_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        meta_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self.meta_card_table.setColumnWidth(0, 62)
+        self.meta_card_table.setColumnWidth(2, 72)
+        detail_layout.addWidget(self.meta_card_table, 1)
+        splitter.addWidget(detail)
+        splitter.setSizes((340, 660))
+        layout.addWidget(splitter, 1)
+
+        note = QLabel("数据来自本地缓存；我的卡组会自动加入列表。启动时每天最多向 WBArts 检查一次，网络失败时继续使用旧缓存。")
+        note.setObjectName("muted")
+        layout.addWidget(note)
+        self._refresh_meta_page()
+        return page
+
+    @staticmethod
+    def _meta_format_label(value: object) -> str:
+        normalized = str(value or "").strip().casefold()
+        if normalized in {"rotation", "rot", "1", "format_1", "format1", "轮换"}:
+            return "轮换"
+        if normalized in {"unlimited", "unlim", "2", "format_2", "format2", "无限"}:
+            return "无限"
+        return str(value or "未知")
+
+    def _filtered_meta_profiles(self) -> list[MetaDeckProfile]:
+        format_filter = ""
+        class_filter = 0
+        query = ""
+        if hasattr(self, "meta_format_filter"):
+            format_filter = str(self.meta_format_filter.currentData() or "").strip().casefold()
+        if hasattr(self, "meta_class_filter"):
+            try:
+                class_filter = int(self.meta_class_filter.currentData() or 0)
+            except (TypeError, ValueError):
+                class_filter = 0
+        if hasattr(self, "meta_search"):
+            query = self.meta_search.text().strip().casefold()
+        result: list[MetaDeckProfile] = []
+        for profile in self._meta_profiles:
+            profile_format = str(profile.format or "").strip().casefold()
+            if format_filter and self._meta_format_label(profile_format).casefold() != (
+                "轮换" if format_filter == "rotation" else "无限"
+            ):
+                continue
+            if class_filter and int(profile.class_id) != class_filter:
+                continue
+            if query and query not in f"{profile.name} {profile.archetype}".casefold():
+                continue
+            result.append(profile)
+        return sorted(result, key=lambda profile: (int(profile.class_id), profile.name.casefold(), profile.profile_id))
+
+    def _refresh_meta_page(self) -> None:
+        if not hasattr(self, "meta_deck_list"):
+            return
+        previous = self.meta_deck_list.currentItem()
+        previous_id = previous.data(Qt.ItemDataRole.UserRole) if previous is not None else ""
+        profiles = self._filtered_meta_profiles()
+        self.meta_deck_list.blockSignals(True)
+        self.meta_deck_list.clear()
+        grouped: dict[str, list[MetaDeckProfile]] = {tier: [] for tier in META_TIER_ORDER}
+        for profile in profiles:
+            grouped.setdefault(meta_tier_label(profile.tier, profile.archetype), []).append(profile)
+        for tier in META_TIER_ORDER:
+            tier_profiles = grouped.get(tier, [])
+            if not tier_profiles:
+                continue
+            header = QListWidgetItem(f"{tier}  ·  {len(tier_profiles)} 套卡组")
+            header.setData(Qt.ItemDataRole.UserRole, None)
+            header.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            header.setForeground(QColor("#58738a"))
+            header.setFont(QFont("Microsoft YaHei UI", 9, QFont.Weight.Bold))
+            self.meta_deck_list.addItem(header)
+            for profile in tier_profiles:
+                format_label = self._meta_format_label(profile.format)
+                item = QListWidgetItem(
+                    f"{profile.display_name}\n{class_name(profile.class_id)} · {format_label} · {profile.total_cards}/40"
+                )
+                item.setData(Qt.ItemDataRole.UserRole, profile.profile_id)
+                icon = self._class_icon(profile.class_id)
+                if not icon.isNull():
+                    item.setIcon(icon)
+                self.meta_deck_list.addItem(item)
+        target_row = next(
+            (
+                row
+                for row in range(self.meta_deck_list.count())
+                if self.meta_deck_list.item(row).data(Qt.ItemDataRole.UserRole)
+            ),
+            -1,
+        )
+        if previous_id:
+            for row in range(self.meta_deck_list.count()):
+                if self.meta_deck_list.item(row).data(Qt.ItemDataRole.UserRole) == previous_id:
+                    target_row = row
+                    break
+        self.meta_deck_list.setCurrentRow(target_row if profiles else -1)
+        self.meta_deck_list.blockSignals(False)
+        if profiles and target_row >= 0:
+            self._select_meta_deck_row(self.meta_deck_list.currentRow())
+        else:
+            self._select_meta_deck_row(-1)
+
+    def _select_meta_deck_row(self, row: int) -> None:
+        if not hasattr(self, "meta_card_table"):
+            return
+        profile: MetaDeckProfile | None = None
+        if 0 <= row < self.meta_deck_list.count():
+            profile_id = self.meta_deck_list.item(row).data(Qt.ItemDataRole.UserRole)
+            profile = next((item for item in self._meta_profiles if item.profile_id == profile_id), None)
+        self.meta_card_table.setRowCount(0)
+        if profile is None:
+            self.meta_detail_title.setText("卡组卡牌")
+            self.meta_detail_hint.setText("暂无符合筛选条件的缓存卡组")
+            return
+        self.meta_detail_title.setText(
+            f"{profile.display_name} · {class_name(profile.class_id)} · {self._meta_format_label(profile.format)} · {profile.total_cards}/40"
+        )
+        self.meta_detail_hint.setText(
+            f"{profile.tier} · 更新于 {profile.updated_at or '未知'} · 仅文字模式"
+        )
+        cards = sorted(
+            profile.cards.items(),
+            key=lambda item: (get_card_metadata(item[0]).cost if get_card_metadata(item[0]) else 99, self._card_name(item[0]), item[0]),
+        )
+        for card_id, count in cards:
+            row_index = self.meta_card_table.rowCount()
+            self.meta_card_table.insertRow(row_index)
+            metadata = get_card_metadata(card_id)
+            self.meta_card_table.setItem(row_index, 0, QTableWidgetItem(str(metadata.cost if metadata else "?")))
+            self.meta_card_table.setItem(row_index, 1, QTableWidgetItem(self._card_name(card_id)))
+            self.meta_card_table.setItem(row_index, 2, QTableWidgetItem(str(count)))
+
+    def _start_meta_cache_refresh(self) -> None:
+        if self._meta_refresh_in_progress:
+            return
+        self._meta_refresh_in_progress = True
+        thread = Thread(target=self._meta_cache_refresh_worker, name="meta-deck-refresh", daemon=True)
+        thread.start()
+
+    def _meta_cache_refresh_worker(self) -> None:
+        try:
+            profiles, status = refresh_wbarts_meta_cache_daily()
+        except Exception as exc:  # pragma: no cover - defensive boundary for startup thread
+            profiles, status = self._meta_profiles, f"failed: {exc}"
+        self.meta_cache_received.emit((profiles, status))
+
+    def _apply_meta_cache_refresh(self, payload: object) -> None:
+        self._meta_refresh_in_progress = False
+        if not isinstance(payload, tuple) or len(payload) != 2:
+            return
+        profiles, status = payload
+        if isinstance(profiles, (list, tuple)):
+            self._remote_meta_profiles = tuple(
+                item for item in profiles if isinstance(item, MetaDeckProfile)
+            )
+            self._meta_profiles = self._merge_local_meta_profiles(
+                self._remote_meta_profiles,
+            )
+            self._opponent_deck_matcher = OpponentDeckMatcher(self._meta_profiles)
+        status_text = str(status or "使用本地缓存")
+        if status_text == "updated":
+            self._meta_refresh_status = "今日已更新"
+        elif status_text == "skipped":
+            self._meta_refresh_status = "今日已检查 · 使用缓存"
+        else:
+            self._meta_refresh_status = "更新失败 · 使用旧缓存"
+        if hasattr(self, "meta_cache_status"):
+            self.meta_cache_status.setText(self._meta_refresh_status)
+        self._refresh_meta_page()
+        if status_text == "updated":
+            # Re-run the optional historical scan with the newly downloaded
+            # profiles so a first launch can label old terminal matches too.
+            QTimer.singleShot(0, self._start_opponent_deck_backfill)
 
     def _build_probability_page(self) -> QWidget:
         page = self._page("probabilityPage")
@@ -1422,7 +1745,7 @@ class QtTrackerWindow(FluentWindow):
         match_title = QHBoxLayout()
         match_title.addWidget(QLabel("详细对局"))
         match_title.addStretch(1)
-        match_hint = QLabel("对手卡组列可双击输入")
+        match_hint = QLabel("对手卡组按公开出牌自动匹配；也可双击手动输入")
         match_hint.setObjectName("muted")
         match_title.addWidget(match_hint)
         layout.addLayout(match_title)
@@ -1434,7 +1757,7 @@ class QtTrackerWindow(FluentWindow):
             | QAbstractItemView.EditTrigger.EditKeyPressed
         )
         self.match_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.match_table.setHorizontalHeaderLabels(("我的牌组", "对手职业", "对手卡组", "先后手", "回合数", "时间", "结果"))
+        self.match_table.setHorizontalHeaderLabels(("我的牌组", "对手职业", "对手卡组", "先后手", "回合数", "时间（本地）", "结果"))
         match_header = self.match_table.horizontalHeader()
         for column in range(7):
             match_header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
@@ -1737,6 +2060,7 @@ class QtTrackerWindow(FluentWindow):
         self._deck_detail_dirty = True
         if self._is_page_current(getattr(self, "decks_page", None)):
             self._schedule_deck_detail_render()
+        self._refresh_local_meta_profiles()
         self._update_header_stats()
         self._refresh_stats_page()
 
@@ -2039,6 +2363,43 @@ class QtTrackerWindow(FluentWindow):
         # row/icon and statistics after the service confirms the switch.
         self._sync_deck_selection_ui(render_detail=False)
 
+    def _start_opponent_deck_backfill(self) -> None:
+        """Scan the optional session log away from the Qt event loop."""
+        if (
+            self._opponent_backfill_in_progress
+            or not self._history.records
+            or not self._opponent_deck_matcher.profiles
+        ):
+            return
+        self._opponent_backfill_in_progress = True
+        path = Path("logs") / "app_session.jsonl"
+
+        def scan() -> None:
+            try:
+                observations = load_session_opponent_observations(path)
+            except Exception:  # pragma: no cover - defensive boundary for log I/O
+                observations = {}
+            self._opponent_backfill_in_progress = False
+            self.opponent_backfill_received.emit(observations)
+
+        Thread(target=scan, name="opponent-deck-backfill", daemon=True).start()
+
+    def _apply_opponent_deck_backfill(self, value: object) -> None:
+        """Apply session-log observations and refresh only when labels change."""
+        observations = value if isinstance(value, dict) else {}
+        if not observations:
+            return
+        try:
+            labels_added = self._history.auto_match_opponent_decks(
+                self._opponent_deck_matcher,
+                observations,
+            )
+        except (OSError, ValueError, TypeError) as exc:
+            self._history_error = str(exc)
+            return
+        if labels_added:
+            self._refresh_stats_page()
+
     def _toggle_recording(self, state: int) -> None:
         self._record_matches = bool(state)
         self._update_header_stats()
@@ -2078,9 +2439,12 @@ class QtTrackerWindow(FluentWindow):
         """Update the live candidate without ever blocking the tracker UI."""
         if not self._opponent_deck_matcher.profiles:
             return
-        opponent_class_id = snapshot.get("opponent_class_id")
-        if not isinstance(opponent_class_id, int):
-            opponent_class_id = None
+        active = self._active_deck()
+        _, opponent_class_id = orient_class_ids(
+            snapshot.get("self_class_id"),
+            snapshot.get("opponent_class_id"),
+            active.class_id if active is not None else None,
+        )
         observed = self._played_card_ids(opponent.get("played_card_ids"))
         result = self._opponent_deck_matcher.match(observed, opponent_class_id)
         if result is None:
@@ -2140,31 +2504,42 @@ class QtTrackerWindow(FluentWindow):
             len(mine.get("destroyed_card_ids", ())) if isinstance(mine.get("destroyed_card_ids"), (list, tuple)) else 0,
         )
         try:
+            self_class_id, opponent_class_id = orient_class_ids(
+                snapshot.get("self_class_id"),
+                snapshot.get("opponent_class_id"),
+                deck.class_id,
+            )
             record = MatchRecord(
                 match_id=model_id,
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 deck_key=self._match_deck_key,
                 deck_name=deck.name,
-                self_class_id=snapshot.get("self_class_id") if isinstance(snapshot.get("self_class_id"), int) else None,
-                opponent_class_id=snapshot.get("opponent_class_id") if isinstance(snapshot.get("opponent_class_id"), int) else None,
-                opponent_class=class_name(snapshot.get("opponent_class_id") if isinstance(snapshot.get("opponent_class_id"), int) else None),
+                self_class_id=self_class_id,
+                opponent_class_id=opponent_class_id,
+                opponent_class=class_name(opponent_class_id),
                 result=terminal,
                 result_code=result_code,
                 turn=turn,
                 is_first=mine.get("is_first_side") if isinstance(mine.get("is_first_side"), bool) else None,
                 opponent_deck_name=self._recognized_opponent_deck_name,
+                opponent_played_card_ids=self._played_card_ids(opponent.get("played_card_ids")),
             )
-            if not self._history.add(record) and self._recognized_opponent_deck_name:
+            if not self._history.add(record):
                 # A terminal snapshot can arrive before the last public card
                 # event.  Fill an initially blank label once a later snapshot
                 # separates the candidates, but never overwrite a user's
-                # manually edited label.
+                # manually edited label.  Keep the public-card evidence even
+                # when the profile cache cannot identify the exact build yet.
                 existing = next(
                     (item for item in self._history.records if item.match_id == model_id),
                     None,
                 )
-                if existing is not None and not existing.opponent_deck_name:
-                    self._history.update_opponent_deck(model_id, self._recognized_opponent_deck_name)
+                if existing is not None:
+                    observed = self._played_card_ids(opponent.get("played_card_ids"))
+                    if len(observed) > len(existing.opponent_played_card_ids):
+                        self._history.update_opponent_played_cards(model_id, observed)
+                    if self._recognized_opponent_deck_name and not existing.opponent_deck_name:
+                        self._history.update_opponent_deck(model_id, self._recognized_opponent_deck_name)
         except (OSError, ValueError) as exc:
             self._history_error = str(exc)
         self._refresh_stats_page()
@@ -2395,7 +2770,9 @@ class QtTrackerWindow(FluentWindow):
             (deck.name for deck in self._repository.decks if deck.key == filter_key),
             "已选牌组",
         )
-        self.stats_reset_button.setEnabled(filter_key is not None)
+        has_records = bool(self._history.records)
+        self.stats_reset_button.setText("重置所有卡组" if filter_key is None else "重置筛选牌组")
+        self.stats_reset_button.setEnabled(has_records)
         first = stats["first"]
         second = stats["second"]
         self.stats_rate_metric.set_value(
@@ -2487,10 +2864,10 @@ class QtTrackerWindow(FluentWindow):
             values = (
                 record.deck_name,
                 record.opponent_class,
-                record.opponent_deck_name or "（双击输入）",
+                self._canonical_meta_deck_label(record.opponent_deck_name) or "（双击输入）",
                 "先手" if record.is_first is True else "后手" if record.is_first is False else "未知",
                 str(record.turn or "—"),
-                record.timestamp.replace("T", " ")[:16],
+                format_timestamp_local(record.timestamp),
                 record.result,
             )
             for column, value in enumerate(values):
@@ -2527,7 +2904,21 @@ class QtTrackerWindow(FluentWindow):
     def _reset_stats(self) -> None:
         filter_key = self._stats_filter_key()
         if filter_key is None:
-            self._show_info("重置胜率", "请选择具体牌组后再重置。")
+            if not self._history.records:
+                self._show_info("重置胜率", "当前没有可重置的对局记录。")
+                return
+            answer = QMessageBox.question(
+                self,
+                "重置所有卡组统计",
+                "确定要删除所有卡组的本地胜负统计吗？\n此操作不可撤销。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            self._history.clear_all()
+            self._refresh_stats_page()
+            self._update_header_stats()
             return
         deck = next((deck for deck in self._repository.decks if deck.key == filter_key), None)
         if deck is None:
@@ -2537,6 +2928,18 @@ class QtTrackerWindow(FluentWindow):
         self._history.clear_deck(filter_key); self._refresh_stats_page(); self._update_header_stats()
 
     # ----- formatting helpers and small dialogs --------------------------------
+
+    def _canonical_meta_deck_label(self, value: object) -> str:
+        """Collapse cached build/sample names to the website archetype label."""
+        clean = str(value or "").strip()
+        if not clean or clean == "（双击输入）":
+            return clean
+        lowered = clean.casefold()
+        for profile in self._meta_profiles:
+            known = {str(profile.name or "").strip(), str(profile.profile_id or "").strip()}
+            if clean in known or lowered in {item.casefold() for item in known if item}:
+                return profile.display_name
+        return clean
 
     def _card_name(self, value: object) -> str:
         return get_card_name(value) if isinstance(value, int) else "未知卡牌"

@@ -22,7 +22,7 @@ from .memory.discovery import find_battle_models, find_battle_roots, find_battle
 from .memory.win32 import ProcessInfo, ProcessReader, find_process_candidates
 from .opponent_hand import OpponentKnownHand
 from .card_catalog import canonical_card_id
-from .match_history import result_label
+from .match_history import orient_class_ids, orient_player_order, result_label
 from .training_data import (
     TrainingMatchRecorder,
     TrainingUploadQueue,
@@ -332,6 +332,19 @@ class TrackerService:
 
     def _attach_deck_state(self, snapshot: dict[str, object]) -> None:
         root = snapshot.get("root")
+        if isinstance(root, dict):
+            # Keep adapters and replay fixtures that construct a root directly
+            # consistent with the memory reader's public projection.  The
+            # player id is more authoritative than list position on terminal
+            # frames where BattleRoot briefly returns server order.  The class
+            # fallback also repairs old adapters that predate unique_id.
+            selected_class = self._selected_deck.class_id if self._selected_deck else None
+            root["players"] = orient_player_order(
+                root.get("players"),
+                self_class_id=snapshot.get("self_class_id"),
+                opponent_class_id=snapshot.get("opponent_class_id"),
+                expected_self_class_id=selected_class,
+            )
         mine: dict[str, object] | None = None
         if isinstance(root, dict):
             players = root.get("players")
@@ -360,6 +373,18 @@ class TrackerService:
                     result_code if isinstance(result_code, int) else self._last_result_code
                 )
             if self._selected_deck is not None:
+                # BattleInfo's two user entries can be returned in the
+                # opposite order from the local public player on some
+                # terminal snapshots.  Normalize the semantic fields before
+                # the UI, history, opponent matcher, and training recorder
+                # consume this snapshot.
+                self_class_id, opponent_class_id = orient_class_ids(
+                    snapshot.get("self_class_id"),
+                    snapshot.get("opponent_class_id"),
+                    self._selected_deck.class_id,
+                )
+                snapshot["self_class_id"] = self_class_id
+                snapshot["opponent_class_id"] = opponent_class_id
                 deck_info = self._selected_deck.to_dict()
                 if self._selected_deck_key:
                     deck_info["deck_key"] = self._selected_deck_key

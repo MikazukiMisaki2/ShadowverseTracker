@@ -33,7 +33,15 @@ from .deck_repository import DeckRepository, SavedDeck
 from .faith_probability import calculate_faith_damage_probability
 from .memory.deck import DeckCard
 from .official_deck import OfficialDeck, OfficialDeckError, import_deck_code, parse_official_deck
-from .match_history import CLASS_NAMES, MatchHistory, MatchRecord, class_name, result_label, terminal_match_id
+from .match_history import (
+    CLASS_NAMES,
+    MatchHistory,
+    MatchRecord,
+    class_name,
+    orient_class_ids,
+    result_label,
+    terminal_match_id,
+)
 from .opponent_hand import UNKNOWN_CARD_TYPE_LABELS, OpponentKnownHand
 from .opponent_key_probability import calculate_key_probability
 from .tracker_service import TrackerConfig, TrackerService
@@ -60,6 +68,12 @@ class TrackerApp(tk.Tk):
         self._match_history_error = ""
         try:
             self._match_history.load()
+        except (OSError, ValueError) as exc:
+            self._match_history_error = str(exc)
+        try:
+            self._match_history.reconcile_deck_class_ids({
+                deck.key: deck.class_id for deck in self._repository.decks
+            })
         except (OSError, ValueError) as exc:
             self._match_history_error = str(exc)
         self._match_sequence = 0
@@ -1543,9 +1557,12 @@ class TrackerApp(tk.Tk):
         ):
             deck = snapshot.get("deck")
             deck_name = str(deck.get("deck_name") or "未命名牌组") if isinstance(deck, dict) else "未命名牌组"
-            opponent_class_id = snapshot.get("opponent_class_id")
-            if not isinstance(opponent_class_id, int):
-                opponent_class_id = None
+            active = self._active_saved_deck()
+            self_class_id, opponent_class_id = orient_class_ids(
+                snapshot.get("self_class_id"),
+                snapshot.get("opponent_class_id"),
+                active.class_id if active is not None else None,
+            )
             try:
                 self._match_history_error = ""
                 model_match_id = terminal_match_id(
@@ -1564,13 +1581,17 @@ class TrackerApp(tk.Tk):
                     timestamp=datetime.now(timezone.utc).isoformat(),
                     deck_key=self._match_deck_key,
                     deck_name=deck_name,
-                    self_class_id=(snapshot.get("self_class_id") if isinstance(snapshot.get("self_class_id"), int) else None),
+                    self_class_id=self_class_id,
                     opponent_class_id=opponent_class_id,
                     opponent_class=class_name(opponent_class_id),
                     result=terminal_result,
                     result_code=result_code,
                     turn=turn,
                     is_first=mine.get("is_first_side") if isinstance(mine.get("is_first_side"), bool) else None,
+                    opponent_played_card_ids=tuple(
+                        item[0] if isinstance(item, (list, tuple)) and item else item
+                        for item in opponent.get("played_card_ids", ())
+                    ) if isinstance(opponent.get("played_card_ids"), (list, tuple)) else (),
                 ))
             except (OSError, ValueError) as exc:
                 self._match_history_error = str(exc)

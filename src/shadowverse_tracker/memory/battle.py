@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Protocol
 
+from ..match_history import orient_player_order
+
 
 class MemoryReader(Protocol):
     def read(self, address: int, size: int) -> bytes: ...
@@ -287,7 +289,11 @@ class BattleRoot:
         practice-mode reader.
         """
         result = self.to_dict()
-        players = result["players"]
+        # A terminal BattleRoot can transiently expose server order.  Normalize
+        # before applying privacy masking and before projecting legal actions so
+        # every downstream consumer sees the same local/opponent positions.
+        players = orient_player_order(result["players"])
+        result["players"] = players
         if not reveal_opponent_hand and isinstance(players, (list, tuple)) and len(players) >= 2:
             opponent = players[1]
             if isinstance(opponent, dict):
