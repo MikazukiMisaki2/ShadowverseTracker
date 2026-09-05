@@ -336,50 +336,85 @@ class MetricCard(QFrame):
 
 
 class ClassWinRateChart(QFrame):
-    """Seven-class vertical win-rate chart with matchup colors."""
+    """Seven-class chart with a win-rate or match-count presentation."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("chartCard")
         self.setMinimumWidth(620)
-        self.setMinimumHeight(220)
+        self.setMinimumHeight(240)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._rows: list[tuple[str, float, int, int, QIcon]] = []
+        self._mode = "rate"
+        self.mode_combo = ComboBox(self)
+        self.mode_combo.addItems(("按胜率", "按对局数"))
+        self.mode_combo.setFixedWidth(112)
+        self.mode_combo.currentIndexChanged.connect(
+            lambda index: self.set_mode("games" if index == 1 else "rate")
+        )
 
     def set_rows(self, rows: list[tuple[str, float, int, int, QIcon]]) -> None:
         self._rows = list(rows)
         self.update()
 
+    def set_mode(self, mode: str) -> None:
+        value = "games" if mode == "games" else "rate"
+        if value == self._mode:
+            return
+        self._mode = value
+        self.update()
+
     def sizeHint(self) -> QSize:  # noqa: N802 - Qt API name
-        return QSize(880, 240)
+        return QSize(880, 260)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API name
+        super().resizeEvent(event)
+        self.mode_combo.move(max(14, self.width() - self.mode_combo.width() - 12), 8)
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt API name
         super().paintEvent(event)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(QColor("#244f70"))
-        painter.drawText(14, 22, "职业胜率")
+        painter.drawText(14, 22, "职业胜率" if self._mode == "rate" else "职业对局数")
         if not self._rows:
             painter.setPen(QColor("#8798a8"))
-            painter.drawText(14, 54, "暂无已完成对局")
+            painter.drawText(14, 62, "暂无已完成对局")
             return
-        left, right, top, bottom = 34, 24, 38, 62
+
+        left, right, top, bottom = 36, 24, 52, 58
         baseline = max(top + 30, self.height() - bottom)
         chart_height = max(50, baseline - top)
-        slot_width = max(42, (self.width() - left - right) // max(1, len(self._rows)))
-        bar_width = max(22, min(58, int(slot_width * 0.55)))
-        for guide in (0, 50, 100):
-            y = baseline - int(chart_height * guide / 100)
+        plot_width = max(1, self.width() - left - right)
+        slot_width = plot_width / max(1, len(self._rows))
+        bar_width = max(22, min(64, int(slot_width * 0.52)))
+        if self._mode == "rate":
+            scale_max = 100.0
+            guides: tuple[float, ...] = (0.0, 50.0, 100.0)
+            guide_suffix = "%"
+        else:
+            maximum = max((int(row[3]) for row in self._rows), default=0)
+            scale_max = float(max(1, maximum))
+            midpoint = max(1, math.ceil(scale_max / 2))
+            guides = tuple(float(value) for value in sorted(set((0, midpoint, int(scale_max)))))
+            guide_suffix = "局"
+        for guide in guides:
+            y = baseline - int(chart_height * guide / scale_max)
             painter.setPen(QColor("#e4ebf1"))
             painter.drawLine(left, y, self.width() - right, y)
             painter.setPen(QColor("#8798a8"))
-            painter.drawText(5, y + 4, f"{guide}%")
+            guide_text = f"{int(guide)}{guide_suffix}" if guide.is_integer() else f"{guide:g}{guide_suffix}"
+            painter.drawText(5, y + 4, guide_text)
         for index, (label, rate, wins, total, icon) in enumerate(self._rows):
-            center = left + index * slot_width + slot_width // 2
+            # Compute the center from the full plot width.  The old integer
+            # slot calculation accumulated rounding error, which made the
+            # last icon/bar visibly drift away from its grid slot.
+            center = int(round(left + (index + 0.5) * slot_width))
             x = center - bar_width // 2
             has_data = total > 0
             clamped = max(0.0, min(100.0, float(rate)))
-            height = int(chart_height * clamped / 100) if has_data else 0
+            value = clamped if self._mode == "rate" else float(total)
+            height = int(chart_height * value / scale_max) if has_data else 0
             if has_data and clamped >= 50:
                 color = QColor("#43a653")
             elif has_data and clamped >= 20:
@@ -395,14 +430,23 @@ class ClassWinRateChart(QFrame):
             else:
                 painter.drawRoundedRect(x, baseline - 2, bar_width, 2, 1, 1)
             painter.setPen(QColor("#244f70"))
-            value = f"{clamped:.1f}%" if has_data else "—"
-            painter.drawText(x - 12, max(top + 14, baseline - height - 6), value)
-            painter.setPen(QColor("#385a72"))
-            painter.drawText(x + bar_width // 2 - 13, baseline - max(16, height // 2), f"{wins}/{total}") if height >= 30 else None
+            rate_text = f"{clamped:.1f}%" if has_data else "—"
+            text_width = painter.fontMetrics().horizontalAdvance(rate_text)
+            rate_y = max(top + 13, baseline - height - 6)
+            painter.drawText(center - text_width // 2, rate_y, rate_text)
+            if self._mode == "games":
+                count_text = f"{total}局" if has_data else "0局"
+                count_width = painter.fontMetrics().horizontalAdvance(count_text)
+                count_y = min(baseline - 4, rate_y + 14)
+                painter.drawText(center - count_width // 2, count_y, count_text)
+            elif height >= 30:
+                match_text = f"{wins}/{total}"
+                match_width = painter.fontMetrics().horizontalAdvance(match_text)
+                painter.setPen(QColor("#385a72"))
+                painter.drawText(center - match_width // 2, baseline - max(16, height // 2), match_text)
             if not icon.isNull():
-                painter.drawPixmap(center - 10, baseline + 9, icon.pixmap(QSize(20, 20)))
-            painter.setPen(QColor("#385a72"))
-            painter.drawText(center - slot_width // 2 + 2, baseline + 43, label)
+                icon_size = 26
+                painter.drawPixmap(center - icon_size // 2, baseline + 9, icon.pixmap(QSize(icon_size, icon_size)))
 
 
 def _visible_window_rect_for_pid(pid: int | None) -> tuple[int, int, int, int] | None:
