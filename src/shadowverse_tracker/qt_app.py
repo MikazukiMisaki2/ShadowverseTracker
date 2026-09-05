@@ -84,6 +84,7 @@ from .match_history import (
 )
 from .official_deck import OfficialDeckError, import_deck_code, parse_official_deck
 from .opponent_key_probability import calculate_key_probability
+from .opponent_deck_matcher import OpponentDeckMatcher, load_meta_deck_profiles
 from .tracker_service import TrackerConfig, TrackerService
 
 
@@ -993,6 +994,12 @@ class QtTrackerWindow(FluentWindow):
             self._history.load()
         except (OSError, ValueError) as exc:
             self._history_error = str(exc)
+        # Opponent deck recognition is intentionally offline and conservative:
+        # the polling thread only supplies public played-card IDs, while this
+        # cached matcher waits for enough evidence before assigning a label.
+        self._opponent_deck_matcher = OpponentDeckMatcher(load_meta_deck_profiles())
+        self._recognized_opponent_deck_name = ""
+        self._recognized_opponent_deck_confidence: float | None = None
         self._record_matches = True
         self._key_manual_inputs = False
         self._updating_key_inputs = False
@@ -2047,6 +2054,40 @@ class QtTrackerWindow(FluentWindow):
 
     # ----- snapshot rendering ---------------------------------------------------
 
+    @staticmethod
+    def _played_card_ids(value: object) -> tuple[int, ...]:
+        """Extract card IDs from the reader's public played-card tuples."""
+        if not isinstance(value, (list, tuple)):
+            return ()
+        result: list[int] = []
+        for item in value:
+            raw: object = item
+            if isinstance(item, dict):
+                raw = item.get("base_card_id") or item.get("card_id")
+            elif isinstance(item, (list, tuple)) and item:
+                raw = item[0]
+            try:
+                card_id = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if card_id > 0:
+                result.append(card_id)
+        return tuple(result)
+
+    def _update_opponent_deck_match(self, snapshot: dict[str, object], opponent: dict[str, object]) -> None:
+        """Update the live candidate without ever blocking the tracker UI."""
+        if not self._opponent_deck_matcher.profiles:
+            return
+        opponent_class_id = snapshot.get("opponent_class_id")
+        if not isinstance(opponent_class_id, int):
+            opponent_class_id = None
+        observed = self._played_card_ids(opponent.get("played_card_ids"))
+        result = self._opponent_deck_matcher.match(observed, opponent_class_id)
+        if result is None:
+            return
+        self._recognized_opponent_deck_name = result.label
+        self._recognized_opponent_deck_confidence = result.confidence
+
     def _render_snapshot(self, snapshot: object) -> None:
         if not isinstance(snapshot, dict): return
         self._last_snapshot = snapshot
@@ -2063,6 +2104,9 @@ class QtTrackerWindow(FluentWindow):
             self._match_id = f"{address}:{os.getpid()}:{self._match_sequence}"
             active = self._active_deck()
             self._match_deck_key = active.key if active else None
+            self._recognized_opponent_deck_name = ""
+            self._recognized_opponent_deck_confidence = None
+        self._update_opponent_deck_match(snapshot, opponent)
         terminal = result_label(result_code, mine.get("life") if isinstance(mine.get("life"), int) else None, opponent.get("life") if isinstance(opponent.get("life"), int) else None)
         self._track_terminal(snapshot, mine, opponent, terminal, address, turn, result_code)
         if terminal in {"胜利", "失败"}:
@@ -2096,7 +2140,7 @@ class QtTrackerWindow(FluentWindow):
             len(mine.get("destroyed_card_ids", ())) if isinstance(mine.get("destroyed_card_ids"), (list, tuple)) else 0,
         )
         try:
-            self._history.add(MatchRecord(
+            record = MatchRecord(
                 match_id=model_id,
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 deck_key=self._match_deck_key,
@@ -2108,7 +2152,19 @@ class QtTrackerWindow(FluentWindow):
                 result_code=result_code,
                 turn=turn,
                 is_first=mine.get("is_first_side") if isinstance(mine.get("is_first_side"), bool) else None,
-            ))
+                opponent_deck_name=self._recognized_opponent_deck_name,
+            )
+            if not self._history.add(record) and self._recognized_opponent_deck_name:
+                # A terminal snapshot can arrive before the last public card
+                # event.  Fill an initially blank label once a later snapshot
+                # separates the candidates, but never overwrite a user's
+                # manually edited label.
+                existing = next(
+                    (item for item in self._history.records if item.match_id == model_id),
+                    None,
+                )
+                if existing is not None and not existing.opponent_deck_name:
+                    self._history.update_opponent_deck(model_id, self._recognized_opponent_deck_name)
         except (OSError, ValueError) as exc:
             self._history_error = str(exc)
         self._refresh_stats_page()
@@ -2177,6 +2233,13 @@ class QtTrackerWindow(FluentWindow):
 
     def _format_history(self, mine: dict[str, object], opponent: dict[str, object], snapshot: dict[str, object]) -> str:
         lines = [f"T{mine.get('turn', '?')} · 我方生命 {mine.get('life', '?')} · 对手生命 {opponent.get('life', '?')}"]
+        if self._recognized_opponent_deck_name:
+            confidence = (
+                f" · {self._recognized_opponent_deck_confidence * 100:.0f}%"
+                if self._recognized_opponent_deck_confidence is not None
+                else ""
+            )
+            lines.append(f"对手卡组：{self._recognized_opponent_deck_name}{confidence}")
         events = snapshot.get("events", ())
         if isinstance(events, (list, tuple)):
             for event in events[-10:]:

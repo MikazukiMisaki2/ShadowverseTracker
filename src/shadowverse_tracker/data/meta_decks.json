@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "source": "https://sva.hypd.asia/deck",
+  "updated_at": "2026-09-05",
+  "profiles": [
+    {
+      "id": "wbarts-13337",
+      "name": "中速梦·构筑 A",
+      "class_id": 5,
+      "format": "rotation",
+      "archetype": "中速梦",
+      "cards": {
+        "10052110": 1,
+        "10452130": 3,
+        "10552110": 3,
+        "10654120": 2,
+        "10751120": 3,
+        "10752110": 3,
+        "10753310": 3,
+        "10754110": 3,
+        "10754120": 3,
+        "10851120": 3,
+        "10854110": 2,
+        "10951120": 3,
+        "10952110": 3,
+        "10954110": 2,
+        "10954120": 3
+      },
+      "source_url": "https://sva.hypd.asia/deck/13337",
+      "official_url": "https://shadowverse-wb.com/chs/deck/detail/?hash=1.5.cM8E.dtoY.dtoY.dtoY.eGCk.eGCk.eGCk.ef6e.ef6e.f0oG.f0oG.f0oG.f11k.f11k.f11k.f1KU.f1KU.f1KU.f1W-.f1W-.f1W-.f1X8.f1X8.f1X8.fPCm.fPCm.fPCm.fPxU.fPxU.fndG.fndG.fndG.fnsk.fnsk.fnsk.foL-.foL-.foM8.foM8.foM8"
+    },
+    {
+      "id": "wbarts-150502",
+      "name": "中速梦·构筑 B",
+      "class_id": 5,
+      "format": "rotation",
+      "archetype": "中速梦",
+      "cards": {
+        "10452130": 3,
+        "10552110": 2,
+        "10654120": 3,
+        "10751120": 3,
+        "10752110": 3,
+        "10753310": 3,
+        "10754110": 3,
+        "10754120": 3,
+        "10851120": 3,
+        "10854110": 2,
+        "10951120": 3,
+        "10952110": 3,
+        "10954110": 3,
+        "10954120": 3
+      },
+      "source_url": "https://sva.hypd.asia/deck/150502",
+      "official_url": "https://shadowverse-wb.com/chs/deck/detail/?hash=1.5.dtoY.dtoY.dtoY.eGCk.eGCk.ef6e.ef6e.ef6e.f0oG.f0oG.f0oG.f11k.f11k.f11k.f1KU.f1KU.f1KU.f1W-.f1W-.f1W-.f1X8.f1X8.f1X8.fPCm.fPCm.fPCm.fPxU.fPxU.fndG.fndG.fndG.fnsk.fnsk.fnsk.foL-.foL-.foL-.foM8.foM8.foM8"
+    }
+  ]
+}
