@@ -16,7 +16,7 @@ import re
 import sys
 
 from PySide6.QtCore import Qt, QTimer, Signal, QSize
-from PySide6.QtGui import QColor, QFont, QIcon, QPixmap
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QAbstractItemView,
@@ -192,6 +192,12 @@ QListWidget#deckList::item:selected {
     background: #dff2f4;
     color: #0b6f80;
 }
+QListWidget#deckList::item:hover {
+    background: #edf8f9;
+}
+QListWidget#deckList::item:selected:hover {
+    background: #d5eff1;
+}
 QTableWidget#matchTable {
     background: #ffffff;
     alternate-background-color: #f8fafc;
@@ -214,6 +220,11 @@ QFrame#calculatorCard {
     border: 1px solid #dbe4ee;
     border-radius: 12px;
 }
+QFrame#chartCard {
+    background: #ffffff;
+    border: 1px solid #dbe4ee;
+    border-radius: 8px;
+}
 QFrame#deckCardTile, QFrame#overlayCardTile {
     background: #ffffff;
     border: 1px solid #dbe4ee;
@@ -231,14 +242,6 @@ QLabel#cardName {
 QLabel#cardCount {
     color: #43637c;
     font-size: 11px;
-    font-weight: 700;
-}
-QLabel#coverBadge {
-    background: #dff2f4;
-    color: #087887;
-    border-radius: 6px;
-    padding: 2px 5px;
-    font-size: 10px;
     font-weight: 700;
 }
 QLineEdit, QComboBox, QSpinBox {
@@ -330,6 +333,61 @@ class MetricCard(QFrame):
         self.value_label.setText(str(value))
         if hint is not None:
             self.hint_label.setText(hint)
+
+
+class ClassWinRateChart(QFrame):
+    """Small horizontal bar chart for opponent-class win rates."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("chartCard")
+        self.setMinimumWidth(280)
+        self.setMinimumHeight(135)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._rows: list[tuple[str, float, int, QIcon]] = []
+
+    def set_rows(self, rows: list[tuple[str, float, int, QIcon]]) -> None:
+        self._rows = list(rows)
+        self.update()
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt API name
+        return QSize(380, 170)
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt API name
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QColor("#244f70"))
+        painter.drawText(14, 22, "职业胜率")
+        if not self._rows:
+            painter.setPen(QColor("#8798a8"))
+            painter.drawText(14, 54, "暂无已完成对局")
+            return
+        top = 34
+        row_height = max(23, min(31, (self.height() - top - 10) // len(self._rows)))
+        label_width = 92
+        percent_width = 52
+        bar_left = 14 + label_width
+        bar_width = max(40, self.width() - bar_left - percent_width - 14)
+        for index, (label, rate, finished, icon) in enumerate(self._rows):
+            y = top + index * row_height
+            if not icon.isNull():
+                painter.drawPixmap(14, y + 3, icon.pixmap(QSize(18, 18)))
+                text_left = 37
+            else:
+                text_left = 14
+            painter.setPen(QColor("#385a72"))
+            painter.drawText(text_left, y + 16, label)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#edf1f5"))
+            painter.drawRoundedRect(bar_left, y + 5, bar_width, 13, 6, 6)
+            clamped = max(0.0, min(100.0, float(rate)))
+            painter.setBrush(QColor("#169eb0"))
+            painter.drawRoundedRect(bar_left, y + 5, int(bar_width * clamped / 100), 13, 6, 6)
+            painter.setPen(QColor("#244f70"))
+            painter.drawText(self.width() - percent_width, y + 16, f"{clamped:.1f}%")
+            painter.setPen(QColor("#8798a8"))
+            painter.drawText(bar_left, y + row_height - 3, f"{finished} 局")
 
 
 class OverlayWindow(QWidget):
@@ -635,7 +693,9 @@ class QtTrackerWindow(FluentWindow):
         self._deck_choice_keys: list[str | None] = []
         self._card_image_roots = self._find_card_image_roots()
         self._card_image_paths: dict[int, Path | None] = {}
+        self._card_image_index: dict[int, Path] | None = None
         self._card_image_cache: dict[tuple[int, int], QPixmap] = {}
+        self._deck_detail_render_pending = False
         # Counts edited directly in the card grid are kept as a small draft
         # until the user brings the deck back to exactly 40 cards.  This lets
         # a user change 2→3 on one card and 3→2 on another without losing the
@@ -839,6 +899,7 @@ class QtTrackerWindow(FluentWindow):
         self.deck_list.setObjectName("deckList")
         self.deck_list.setMinimumWidth(290)
         self.deck_list.setIconSize(QSize(26, 26))
+        self.deck_list.setMouseTracking(True)
         self.deck_list.currentRowChanged.connect(self._select_deck_list_row)
         splitter.addWidget(self.deck_list)
         detail = QFrame()
@@ -851,7 +912,7 @@ class QtTrackerWindow(FluentWindow):
         self.deck_detail_title.setObjectName("sectionTitle")
         detail_top.addWidget(self.deck_detail_title)
         detail_top.addStretch(1)
-        self.deck_detail_hint = QLabel("点击卡牌下方按钮设置封面")
+        self.deck_detail_hint = QLabel("双击卡牌或直接编辑数量；末尾可添加新卡")
         self.deck_detail_hint.setObjectName("muted")
         detail_top.addWidget(self.deck_detail_hint)
         detail_layout.addLayout(detail_top)
@@ -993,10 +1054,6 @@ class QtTrackerWindow(FluentWindow):
         ):
             stats_metrics.addWidget(metric, 1)
         layout.addLayout(stats_metrics)
-        self.stats_summary = QLabel("未选择牌组")
-        self.stats_summary.setObjectName("sectionTitle")
-        layout.addWidget(self.stats_summary)
-
         breakdown_title = QHBoxLayout()
         breakdown_title.addWidget(QLabel("职业 / 先后手胜率"))
         breakdown_title.addStretch(1)
@@ -1018,9 +1075,15 @@ class QtTrackerWindow(FluentWindow):
         # consume the whole window on compact displays.
         for column, width in ((0, 126), (1, 62), (2, 72), (3, 112), (4, 112)):
             self.stats_breakdown.setColumnWidth(column, width)
+        self.stats_breakdown.setMinimumWidth(484)
         self.stats_breakdown.setMinimumHeight(135)
         self.stats_breakdown.setMaximumHeight(190)
-        layout.addWidget(self.stats_breakdown)
+        breakdown_content = QHBoxLayout()
+        breakdown_content.setSpacing(10)
+        breakdown_content.addWidget(self.stats_breakdown, 1)
+        self.stats_class_chart = ClassWinRateChart()
+        breakdown_content.addWidget(self.stats_class_chart, 1)
+        layout.addLayout(breakdown_content)
 
         match_title = QHBoxLayout()
         match_title.addWidget(QLabel("详细对局"))
@@ -1103,22 +1166,29 @@ class QtTrackerWindow(FluentWindow):
             return None
         if card_id in self._card_image_paths:
             return self._card_image_paths[card_id]
-        token = str(card_id)
-        found: list[Path] = []
-        pattern = re.compile(rf"(?:^|_){re.escape(token)}(?:_|@|$)")
-        for root in self._card_image_roots:
-            for suffix in ("*.webp", "*.png"):
-                found.extend(
-                    item for item in root.rglob(suffix) if pattern.search(item.stem)
-                )
-            if found:
-                break
-        path = next(
-            (item for item in found if "_evo" not in item.stem and "@" not in item.stem),
-            found[0] if found else None,
-        )
+        if self._card_image_index is None:
+            self._card_image_index = self._build_card_image_index()
+        path = self._card_image_index.get(card_id)
         self._card_image_paths[card_id] = path
         return path
+
+    def _build_card_image_index(self) -> dict[int, Path]:
+        """Index card art once instead of recursively scanning per card tile."""
+        preferred: dict[int, Path] = {}
+        fallback: dict[int, Path] = {}
+        token_pattern = re.compile(r"(?<!\d)(\d{6,})(?!\d)")
+        for root in self._card_image_roots:
+            for suffix in ("*.webp", "*.png"):
+                for item in root.rglob(suffix):
+                    ids = token_pattern.findall(item.stem)
+                    if not ids:
+                        continue
+                    is_preferred = "_evo" not in item.stem and "@" not in item.stem
+                    target = preferred if is_preferred else fallback
+                    for token in ids:
+                        value = int(token)
+                        target.setdefault(value, item)
+        return {**fallback, **preferred}
 
     def _card_image_pixmap(self, card_id: object, height: int = 160) -> QPixmap | None:
         if not isinstance(card_id, int) or card_id <= 0:
@@ -1142,9 +1212,6 @@ class QtTrackerWindow(FluentWindow):
         self,
         card_id: int,
         count: int,
-        *,
-        cover: bool = False,
-        allow_cover: bool = False,
     ) -> QFrame:
         """Create a full-art card tile with an inline count editor."""
         tile = DeckCardTile()
@@ -1185,23 +1252,11 @@ class QtTrackerWindow(FluentWindow):
             lambda value=card_id, editor=count_editor: self._set_deck_card_draft(value, editor.value())
         )
         count_row.addWidget(count_editor)
-        if cover:
-            cover_label = QLabel("封面")
-            cover_label.setObjectName("coverBadge")
-            cover_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-            count_row.addWidget(cover_label, 0, Qt.AlignmentFlag.AlignRight)
         count_row.addStretch(1)
         layout.addLayout(count_row)
         tile.double_clicked.connect(
             lambda editor=count_editor: self._focus_card_count_editor(editor)
         )
-        if allow_cover:
-            cover_button = PushButton("已是封面" if cover else "设为封面")
-            cover_button.setEnabled(not cover)
-            cover_button.clicked.connect(
-                lambda _checked=False, value=card_id: self._set_cover_card(value)
-            )
-            layout.addWidget(cover_button)
         return tile
 
     @staticmethod
@@ -1239,18 +1294,6 @@ class QtTrackerWindow(FluentWindow):
             self._on_deck_saved(updated)
             return
         self._render_deck_detail()
-
-    def _set_cover_card(self, card_id: int) -> None:
-        deck = self._active_deck()
-        if deck is None:
-            return
-        try:
-            self._repository.set_cover(deck.key, card_id)
-        except (OSError, KeyError, ValueError) as exc:
-            self._show_error("设置封面失败", str(exc))
-            return
-        self._refresh_deck_choices()
-        self._show_info("封面已更新", self._card_name(card_id))
 
     def _class_icon(self, class_id: int | None) -> QIcon:
         """Return the official SVWB class mark for a saved deck."""
@@ -1320,6 +1363,42 @@ class QtTrackerWindow(FluentWindow):
         self._update_header_stats()
         self._refresh_stats_page()
 
+    def _sync_deck_selection_ui(self, *, render_detail: bool = True) -> None:
+        """Update selection/highlight widgets without rebuilding their items."""
+        active = self._active_deck()
+        index = self._deck_choice_keys.index(active.key) if active else 0
+        combo = getattr(self, "deck_choice", None)
+        if combo is not None:
+            combo.blockSignals(True)
+            combo.setCurrentIndex(index)
+            combo.blockSignals(False)
+        if hasattr(self, "deck_choice_icon"):
+            icon = self._class_icon(active.class_id) if active is not None else QIcon()
+            self.deck_choice_icon.setPixmap(icon.pixmap(QSize(22, 22)) if not icon.isNull() else QPixmap())
+            self.deck_choice_icon.setVisible(not icon.isNull())
+        deck_list = getattr(self, "deck_list", None)
+        if deck_list is not None and 0 <= index < deck_list.count():
+            deck_list.blockSignals(True)
+            deck_list.setCurrentRow(index)
+            deck_list.blockSignals(False)
+        self._refresh_stats_filter()
+        if render_detail:
+            self._render_deck_detail()
+        self._update_header_stats()
+        self._refresh_stats_page()
+
+    def _schedule_deck_detail_render(self) -> None:
+        """Render card art after the selection event can repaint its highlight."""
+        if self._deck_detail_render_pending:
+            return
+        self._deck_detail_render_pending = True
+
+        def render() -> None:
+            self._deck_detail_render_pending = False
+            self._render_deck_detail()
+
+        QTimer.singleShot(0, render)
+
     def _select_deck_index(self, index: int) -> None:
         if not 0 <= index < len(self._deck_choice_keys):
             return
@@ -1332,7 +1411,11 @@ class QtTrackerWindow(FluentWindow):
         except (OSError, KeyError, ValueError) as exc:
             self._show_error("切换牌组失败", str(exc)); return
         self._match_id = None; self._match_deck_key = None
-        self._refresh_deck_choices()
+        # Keep the existing combo/list items in place so the clicked row stays
+        # highlighted and the expensive card-grid rebuild is not mixed with
+        # item insertion/selection signals.
+        self._sync_deck_selection_ui(render_detail=False)
+        self._schedule_deck_detail_render()
         self._restart_service_deck()
 
     def _select_deck_list_row(self, row: int) -> None:
@@ -1359,7 +1442,7 @@ class QtTrackerWindow(FluentWindow):
         self.deck_detail_title.setText(
             f"{deck.name} · {class_name(deck.class_id)} · {self._format_mode(deck.format_version)} · {draft_total}/40"
         )
-        hint = f"封面：{self._card_name(deck.cover_card_id) if deck.cover_card_id else '未设置'} · 点击卡牌下方按钮更换"
+        hint = "双击卡牌或直接编辑数量；末尾可添加新卡"
         if deck.key in self._deck_card_drafts:
             hint += f" · 数量草稿 {draft_total}/40，补齐后自动保存"
         self.deck_detail_hint.setText(hint)
@@ -1374,8 +1457,6 @@ class QtTrackerWindow(FluentWindow):
             tile = self._make_card_tile(
                 card[0],
                 card[1],
-                cover=card[0] == deck.cover_card_id,
-                allow_cover=True,
             )
             self.deck_card_grid.addWidget(tile, index // 4, index % 4)
         add_tile = QFrame()
@@ -1444,9 +1525,21 @@ class QtTrackerWindow(FluentWindow):
         self._refresh_deck_choices(); self._restart_service_deck()
 
     def _restart_service_deck(self) -> None:
-        if self._service is not None and self._service.running:
-            self._stop_service()
-            self._start_service()
+        service = self._service
+        if service is None or not service.running:
+            return
+        active = self._active_deck()
+        snapshot = active.to_snapshot() if active is not None else None
+        key = active.key if active is not None else None
+        # TrackerService can swap its local ledger atomically.  Restarting the
+        # reader thread here used to block the UI while it joined the polling
+        # thread, which made deck switching feel like a freeze.
+        QTimer.singleShot(
+            0,
+            lambda: service.set_selected_deck(snapshot, key)
+            if service is self._service and service.running
+            else None,
+        )
 
     # ----- service and status ---------------------------------------------------
 
@@ -1521,7 +1614,9 @@ class QtTrackerWindow(FluentWindow):
         self._set_status(str(value))
 
     def _on_deck_event(self, _value: object) -> None:
-        self._refresh_deck_choices()
+        # The deck list itself has not changed; only synchronize the current
+        # row/icon and statistics after the service confirms the switch.
+        self._sync_deck_selection_ui(render_detail=False)
 
     def _toggle_recording(self, state: int) -> None:
         self._record_matches = bool(state)
@@ -1797,12 +1892,8 @@ class QtTrackerWindow(FluentWindow):
         self.stats_second_metric.set_value(
             f"{float(second['win_rate']):.1f}%", f"{int(second['finished'])} 局"
         )
-        self.stats_summary.setText(
-            f"{scope_label} · 总计 {stats['finished']} 局 · {stats['wins']} 胜 / {stats['losses']} 负 · 胜率 {float(stats['win_rate']):.1f}%   "
-            f"先手 {float(first['win_rate']):.1f}%   后手 {float(second['win_rate']):.1f}%"
-        )
-
         self.stats_breakdown.setRowCount(0)
+        chart_rows: list[tuple[str, float, int, QIcon]] = []
         by_class = stats.get("by_class", {})
         if isinstance(by_class, dict):
             for opponent_class, group in sorted(by_class.items(), key=lambda item: str(item[0])):
@@ -1834,6 +1925,15 @@ class QtTrackerWindow(FluentWindow):
                 self.stats_breakdown.setItem(row, 4, QTableWidgetItem(
                     f"{float(second_group.get('win_rate', 0.0)):.1f}% · {int(second_group.get('finished', 0))}局"
                 ))
+                chart_rows.append(
+                    (
+                        str(opponent_class),
+                        float(group.get("win_rate", 0.0)),
+                        int(group.get("finished", 0)),
+                        icon,
+                    )
+                )
+        self.stats_class_chart.set_rows(chart_rows)
 
         records = [
             record for record in self._history.records
